@@ -83,7 +83,7 @@ export interface TypingBoxProps {
   onTestComplete: (wpm: number, accuracy: number, time: number, typedInput: string) => void;
   prompt: TypingPrompt;
   onRequestNewPrompt?: () => void;
-  onRequestAppendPrompt?: () => Promise<string>;
+  onRequestAppendPrompt?: (existingWords: string[]) => Promise<string>;
   isLoading?: boolean;
   /** Optional party-mode hook. Absent = solo typing (default). */
   party?: TypingBoxPartyHook;
@@ -302,7 +302,7 @@ const TypingBox: React.FC<TypingBoxProps> = ({ mode, durationSec = 15, onStatsUp
 
     try {
       appendingRef.current = true;
-      const extra = await onRequestAppendPrompt();
+      const extra = await onRequestAppendPrompt(words);
       if (!extra || !extra.trim()) return;
       const add = extra.split(/\s+/).filter(Boolean);
       if (!add.length) return;

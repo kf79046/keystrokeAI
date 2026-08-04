@@ -16,6 +16,15 @@ export type FinalizedSoloPrompt = {
 
 export type TypingPrompt = string | FinalizedSoloPrompt;
 
+export type SpecialRunConfig = {
+  mode: "words" | "time";
+  wordCount: number | null;
+  durationSec: number | null;
+  language: string;
+  include_punctuation: boolean;
+  include_numbers: boolean;
+};
+
 export type RenderedTestConfig = {
   mode: "words" | "time";
   wordCount: number | null;
@@ -46,5 +55,22 @@ export function renderedTestConfig(
     language: "english",
     include_punctuation: config.includePunctuation,
     include_numbers: config.includeNumbers,
+  };
+}
+
+export function specialRunConfig(input: {
+  text: string;
+  mode: "words" | "time";
+  wordCount?: number | null;
+  durationSec?: number | null;
+  language: string;
+}): SpecialRunConfig {
+  return {
+    mode: input.mode,
+    wordCount: input.mode === "words" ? input.wordCount ?? null : null,
+    durationSec: input.mode === "time" ? input.durationSec ?? null : null,
+    language: input.language,
+    include_punctuation: /[^\p{L}\p{N}\s]/u.test(input.text),
+    include_numbers: /[0-9]/.test(input.text),
   };
 }

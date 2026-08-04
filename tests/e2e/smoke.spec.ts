@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import { deterministicGenerateProxyResponse } from "../fixtures/generateProxyFixtures";
 
 test.beforeEach(async ({ page }) => {
+  let generationSequence = 0;
   await page.addInitScript(() => localStorage.clear());
   await page.route("**/api/**", async (route) => {
     const url = route.request().url();
@@ -19,7 +20,9 @@ test.beforeEach(async ({ page }) => {
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(deterministicGenerateProxyResponse(request)),
+        body: JSON.stringify(
+          deterministicGenerateProxyResponse(request, generationSequence++),
+        ),
       });
     }
 

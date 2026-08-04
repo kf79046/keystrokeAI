@@ -6,13 +6,17 @@ import {
   isFinalizedSoloPrompt,
   promptText,
   renderedTestConfig,
+  specialRunConfig,
   type FinalizedSoloPrompt,
 } from "../../src/lib/prompt/preparedPrompt";
 import {
   APPLICATION_TEST_CONFIG,
   resolveInitialTestConfig,
 } from "../../src/lib/prompt/testGenerationConfig";
-import { parseLastTestConfig } from "../../src/stores/useLastTestStore";
+import {
+  parseLastTestConfig,
+  parseLastTestConfigInput,
+} from "../../src/stores/useLastTestStore";
 
 describe("adaptive runtime configuration", () => {
   it("migrates the legacy words last-test shape", () => {
@@ -60,6 +64,26 @@ describe("adaptive runtime configuration", () => {
     assert.equal(lastUsed, null);
     assert.equal(resolved.wordCount, 20);
     assert.equal(resolved.includePunctuation, true);
+  });
+
+  it("preserves persisted defaults absent from a legacy last-test record", () => {
+    const lastUsed = parseLastTestConfigInput({
+      mode: "words",
+      count: 30,
+      include_punctuation: true,
+    });
+    const resolved = resolveInitialTestConfig({
+      persistedDefaults: {
+        wordSet: "core200",
+        maxRepeatPerWord: 5,
+      },
+      lastUsed,
+    });
+
+    assert.equal(resolved.wordCount, 30);
+    assert.equal(resolved.includePunctuation, true);
+    assert.equal(resolved.wordSet, "core200");
+    assert.equal(resolved.maxRepeatPerWord, 5);
   });
 
   it("keeps resolved difficulty separate from rendered flags", () => {
@@ -133,5 +157,38 @@ describe("adaptive runtime configuration", () => {
     );
     assert.equal(typingBoxSource.includes("isFinalizedSoloPrompt(prepared)"), true);
     assert.equal(typingBoxSource.includes("if (!skipMutation) try"), true);
+  });
+
+  it("keeps explicit metadata for special-mode string prompts", () => {
+    assert.deepEqual(specialRunConfig({
+      text: "const value = 42;",
+      mode: "words",
+      wordCount: 25,
+      language: "javascript",
+    }), {
+      mode: "words",
+      wordCount: 25,
+      durationSec: null,
+      language: "javascript",
+      include_punctuation: true,
+      include_numbers: true,
+    });
+  });
+
+  it("deduplicates before claiming a load token and guards stale errors", () => {
+    const source = readFileSync(
+      "src/components/typing/TypingTest.tsx",
+      "utf8",
+    );
+    const lockCheck = source.indexOf("if (bootLockRef.current) return;");
+    const tokenClaim = source.indexOf("const myToken = ++loadTokenRef.current;");
+
+    assert.equal(lockCheck >= 0, true);
+    assert.equal(tokenClaim > lockCheck, true);
+    assert.equal(
+      /}\s*catch \(err: unknown\) {\s*if \(myToken !== loadTokenRef\.current\) return;/
+        .test(source),
+      true,
+    );
   });
 });

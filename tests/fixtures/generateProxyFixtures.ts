@@ -30,11 +30,12 @@ const WORDS = [
 
 export function deterministicGenerateProxyResponse(
   request: GenerateProxyRequest,
+  sequence = 0,
 ) {
   const count = request.mode === "time" ? 200 : Number(request.count ?? 15);
   const words = Array.from(
     { length: count },
-    (_, index) => WORDS[index % WORDS.length],
+    (_, index) => WORDS[(index + sequence) % WORDS.length],
   );
   const punctuation = request.include_punctuation === true;
   const numbers = request.include_numbers === true;
@@ -43,7 +44,11 @@ export function deterministicGenerateProxyResponse(
     text: words.join(" "),
     mode: request.mode ?? "words",
     count,
-    seed: 9000 + Number(punctuation) * 10 + Number(numbers),
+    seed:
+      9000 +
+      sequence * 100 +
+      Number(punctuation) * 10 +
+      Number(numbers),
     difficulty: "medium",
     flags: {
       punctuation,

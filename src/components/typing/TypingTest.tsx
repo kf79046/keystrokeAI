@@ -57,7 +57,9 @@ import {
 } from "@/lib/prompt/localFallback";
 import {
   isFinalizedSoloPrompt,
+  specialRunConfig,
   type FinalizedSoloPrompt,
+  type SpecialRunConfig,
   type TypingPrompt,
 } from "@/lib/prompt/preparedPrompt";
 import {
@@ -167,6 +169,7 @@ const TypingTest: React.FC = () => {
     ...APPLICATION_TEST_CONFIG,
   });
   const activePromptRef = useRef<FinalizedSoloPrompt | null>(null);
+  const specialRunConfigRef = useRef<SpecialRunConfig | null>(null);
   const appendSequenceRef = useRef(0);
 
   // Backend prompt state
@@ -393,8 +396,8 @@ const TypingTest: React.FC = () => {
     config?: TestGenerationConfig;
     __prefetch?: boolean;
   }) => {
-    const myToken = ++loadTokenRef.current;
     if (bootLockRef.current) return;
+    const myToken = ++loadTokenRef.current;
     bootLockRef.current = true;
     setPromptError(null);
     setPromptLoad('loading');
@@ -415,6 +418,13 @@ const TypingTest: React.FC = () => {
           .slice(0, 25)
           .join(" ");
         activePromptRef.current = null;
+        specialRunConfigRef.current = specialRunConfig({
+          text: coderPrompt,
+          mode: "words",
+          wordCount: 25,
+          durationSec: null,
+          language: coderLang,
+        });
         appendSequenceRef.current = 0;
         React.startTransition(() => {
           setIsTestComplete(false);
@@ -508,7 +518,6 @@ const TypingTest: React.FC = () => {
 
       if (myToken !== loadTokenRef.current) {
         try { devLog('prompt:drop-stale', { token: myToken }); } catch {}
-        bootLockRef.current = false;
         return;
       }
       if (!finalized) throw new Error("Prompt finalization did not produce a result");
@@ -527,6 +536,7 @@ const TypingTest: React.FC = () => {
         setPromptLoad('ready');
       } else {
         activePromptRef.current = prepared;
+        specialRunConfigRef.current = null;
         appendSequenceRef.current = 0;
         initializedConfigRef.current = { ...prepared.requestedConfig };
         useLastTestStore.getState().save(prepared.requestedConfig);
@@ -542,6 +552,7 @@ const TypingTest: React.FC = () => {
       try { tl('prompt->apply', { promptId: 'n/a' }); } catch {}
       try { devLog('prompt:apply'); } catch {}
     } catch (err: unknown) {
+      if (myToken !== loadTokenRef.current) return;
       console.error('[prompt boot] error', err);
       const message = err instanceof Error
         ? err.message
@@ -591,6 +602,7 @@ const TypingTest: React.FC = () => {
       if (pf?.prompt && Object.keys(override).length === 0) {
         prefetchedRef.current = null;
         activePromptRef.current = pf.prompt;
+        specialRunConfigRef.current = null;
         appendSequenceRef.current = 0;
         initializedConfigRef.current = { ...pf.prompt.requestedConfig };
         useLastTestStore.getState().save(pf.prompt.requestedConfig);
@@ -798,6 +810,14 @@ const TypingTest: React.FC = () => {
     }
     const prompt = opts.words.join(' ');
     activePromptRef.current = null;
+    specialRunConfigRef.current = specialRunConfig({
+      text: prompt,
+      mode: opts.mode,
+      wordCount: opts.mode === "words" ? opts.words.length : null,
+      durationSec:
+        opts.mode === "time" ? opts.durationSec ?? DEFAULT_TIME_SEC : null,
+      language: "english",
+    });
     appendSequenceRef.current = 0;
     React.startTransition(() => {
       setIsTestComplete(false);
@@ -901,6 +921,8 @@ const TypingTest: React.FC = () => {
 
   const [syncState, setSyncState] = useState<"synced"|"queued"|"syncing"|"error">("synced");
   const handleTestComplete = async (finalWpm: number, finalAccuracy: number, finalTime: number, finalTypedText?: string) => {
+    const completedPrompt = activePromptRef.current;
+    const completedSpecialConfig = specialRunConfigRef.current;
     setIsTestComplete(true);
     setWpm(finalWpm);
     setAccuracy(finalAccuracy);
@@ -916,7 +938,7 @@ const TypingTest: React.FC = () => {
       try {
         // 1) Prefetch next prompt for the upcoming run
         const config =
-          activePromptRef.current?.requestedConfig ?? createRequestedConfig();
+          completedPrompt?.requestedConfig ?? createRequestedConfig();
         tasks.push(loadPromptOnce({
           __prefetch: true,
           config,
@@ -958,8 +980,9 @@ const TypingTest: React.FC = () => {
 
     // Guarantee a normalized history append for both modes (words/time)
     try {
-      const used = activePromptRef.current?.effectiveConfig;
-      if (!used) throw new Error("No finalized solo config for history");
+      const used = completedPrompt?.effectiveConfig;
+      const special = completedSpecialConfig;
+      if (!used && !special) throw new Error("No active run config for history");
       const globalWithCrypto = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
       const id = globalWithCrypto.crypto?.randomUUID ? globalWithCrypto.crypto.randomUUID() : String(Date.now());
       // append expects a run-like object; cast narrowly to avoid 'any'
@@ -969,8 +992,11 @@ const TypingTest: React.FC = () => {
         wpm: finalWpm,
         acc: finalAccuracy,
         durationSec: Math.round(finalTime ?? 0),
-        mode: used.mode,
-        words: used.mode === 'words' ? (used.wordCount ?? undefined) : undefined,
+        mode: used?.mode ?? special!.mode,
+        words:
+          (used?.mode ?? special!.mode) === "words"
+            ? used?.wordCount ?? special?.wordCount ?? undefined
+            : undefined,
       });
     } catch {}
     if (!finalTypedText) return;
@@ -1013,18 +1039,23 @@ const TypingTest: React.FC = () => {
     // this browser while never actually landing in Postgres/Firestore, so
     // it silently vanishes on any other device/browser for the same account.
     try {
-      const completedConfig = activePromptRef.current?.effectiveConfig;
+      const completedConfig = completedPrompt?.effectiveConfig;
+      const specialConfig = completedSpecialConfig;
       const payload = {
         mode: completedConfig
           ? completedConfig.mode === "time"
             ? `time/${completedConfig.durationSeconds}`
             : `words/${completedConfig.wordCount}`
-          : "words",
+          : specialConfig?.mode === "time"
+            ? `time/${specialConfig.durationSec}`
+            : `words/${specialConfig?.wordCount ?? 0}`,
         durationSec: Math.round(finalTime),
         wordsCount:
           completedConfig?.mode === "words"
             ? completedConfig.wordCount
-            : undefined,
+            : specialConfig?.mode === "words"
+              ? specialConfig.wordCount ?? undefined
+              : undefined,
         wpm: Math.round(finalWpm),
         accuracy: Math.round(finalAccuracy),
       };
@@ -1109,7 +1140,7 @@ const TypingTest: React.FC = () => {
 
   // (old header/filter/stats measuring effect removed; consolidated above)
   const memoNewPrompt = React.useCallback(async () => { await safeRestart(); }, [safeRestart]);
-  const memoAppendPrompt = React.useCallback(async () => {
+  const memoAppendPrompt = React.useCallback(async (existingWords: string[]) => {
     const active = activePromptRef.current;
     if (!active || active.requestedConfig.mode !== "time") return "";
     appendSequenceRef.current += 1;
@@ -1130,6 +1161,7 @@ const TypingTest: React.FC = () => {
       expectedTokenCount: 120,
       seed,
       wordPool: base,
+      priorTokens: existingWords,
     }).text;
   }, []);
 
@@ -1149,6 +1181,9 @@ const TypingTest: React.FC = () => {
   const activeFinalizedPrompt = isFinalizedSoloPrompt(currentPrompt)
     ? currentPrompt
     : null;
+  const activeSpecialRunConfig = activeFinalizedPrompt
+    ? null
+    : specialRunConfigRef.current;
 
   return (
     <div ref={rootRef} className="min-h-dvh relative" data-view={view} data-run={isRunning ? 'true' : 'false'} data-bk-generating={promptLoad === 'loading' && !currentPrompt ? 'true' : 'false'}>
@@ -1588,6 +1623,11 @@ const TypingTest: React.FC = () => {
               avgWpm={avgWpm}
               avgAcc={avgAcc}
               promptMetadata={activeFinalizedPrompt ?? undefined}
+              flags={activeSpecialRunConfig ? {
+                punctuation: activeSpecialRunConfig.include_punctuation,
+                numbers: activeSpecialRunConfig.include_numbers,
+              } : undefined}
+              usedConfig={activeSpecialRunConfig ?? undefined}
 
               onNextTest={async () => { try { tl('results New test click'); } catch {} ; await safeRestart(); }}
               onPracticeWeakSpots={handlePracticeWeakSpots}
