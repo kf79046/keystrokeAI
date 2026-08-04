@@ -10,6 +10,8 @@ export type AdaptiveViolationCode =
   | "WORD_COUNT_MISMATCH"
   | "UNEXPECTED_PUNCTUATION"
   | "UNEXPECTED_DIGITS"
+  | "REQUIRED_PUNCTUATION_MISSING"
+  | "REQUIRED_NUMBERS_MISSING"
   | "EFFECTIVE_FLAG_MISMATCH"
   | "REPRODUCIBILITY_MISMATCH"
   | "DOWNSTREAM_STAGE_ERROR"
@@ -97,6 +99,22 @@ export function validateAdaptiveSample(input: AdaptiveSampleInput): AdaptiveViol
       stage: input.stage,
       message: "Digits appeared while numbers were disabled.",
       details: { digitCount: metrics.digitCount },
+    });
+  }
+
+  if (input.requestedFlags.punctuation && !metrics.hasPunctuation) {
+    violations.push({
+      code: "REQUIRED_PUNCTUATION_MISSING",
+      stage: input.stage,
+      message: "Punctuation was enabled but no punctuation is visible.",
+    });
+  }
+
+  if (input.requestedFlags.numbers && !metrics.hasDigits) {
+    violations.push({
+      code: "REQUIRED_NUMBERS_MISSING",
+      stage: input.stage,
+      message: "Numbers were enabled but no digits are visible.",
     });
   }
 

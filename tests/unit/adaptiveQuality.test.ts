@@ -27,7 +27,7 @@ describe("adaptive validator policy", () => {
     );
   });
 
-  it("treats enabled punctuation and numbers as allowed, not required", () => {
+  it("requires enabled punctuation and numbers to be visible", () => {
     const violations = validateAdaptiveSample({
       stage: "generator",
       text: "alpha beta gamma",
@@ -36,7 +36,10 @@ describe("adaptive validator policy", () => {
       expectedWordCount: 3,
     });
 
-    assert.deepEqual(violations, []);
+    assert.deepEqual(
+      violations.map((violation) => violation.code),
+      ["REQUIRED_PUNCTUATION_MISSING", "REQUIRED_NUMBERS_MISSING"],
+    );
   });
 
   it("reports count and effective-flag mismatches with stable codes", () => {
@@ -50,12 +53,41 @@ describe("adaptive validator policy", () => {
 
     assert.deepEqual(
       violations.map((violation) => violation.code),
-      ["WORD_COUNT_MISMATCH", "EFFECTIVE_FLAG_MISMATCH"],
+      [
+        "WORD_COUNT_MISMATCH",
+        "REQUIRED_PUNCTUATION_MISSING",
+        "EFFECTIVE_FLAG_MISMATCH",
+      ],
     );
   });
 });
 
 describe("deterministic TypeScript generator seam", () => {
+  for (const includePunctuation of [false, true]) {
+    for (const includeNumbers of [false, true]) {
+      it(`honors punctuation=${includePunctuation} numbers=${includeNumbers}`, async () => {
+        const generated = await generatePrompt({
+          mode: "words",
+          count: 15,
+          difficulty: "auto",
+          recent_wpm: 50,
+          recent_accuracy: 95,
+          include_punctuation: includePunctuation,
+          include_numbers: includeNumbers,
+          seed: 4242,
+        });
+        const metrics = inspectAdaptiveContent(generated.text);
+
+        assert.deepEqual(generated.flags, {
+          punctuation: includePunctuation,
+          numbers: includeNumbers,
+        });
+        assert.equal(metrics.hasPunctuation, includePunctuation);
+        assert.equal(metrics.hasDigits, includeNumbers);
+      });
+    }
+  }
+
   it("replays identical local output for the same seed and configuration", async () => {
     const input = {
       mode: "words" as const,
@@ -107,7 +139,7 @@ describe("adaptive quality audit characterization", () => {
     assert.equal(report.observations.length, 8);
   });
 
-  it("keeps generator checks green while exposing downstream flag loss", async () => {
+  it("passes the generator and shared production finalizer in strict mode", async () => {
     const report = await runAdaptiveAudit({
       seeds: [101, 202, 303, 404],
       wordCount: 15,
@@ -122,16 +154,16 @@ describe("adaptive quality audit characterization", () => {
       ),
       true,
     );
-    assert.equal(report.summary.byCode.DOWNSTREAM_STAGE_ERROR, 16);
-    assert.equal(report.summary.byCode.EFFECTIVE_FLAG_MISMATCH, 12);
-    assert.equal(report.summary.byCode.PUNCTUATION_LOST_DOWNSTREAM, 8);
-    assert.equal(report.summary.byCode.NUMBERS_LOST_DOWNSTREAM, 8);
-    assert.equal(report.summary.byCode.WORD_COUNT_MISMATCH, 8);
-    assert.equal(report.summary.byCode.REPRODUCIBILITY_MISMATCH ?? 0, 0);
-    assert.equal(report.summary.totalViolations, 52);
+    assert.equal(
+      report.observations.every(
+        (observation) => observation.violations.length === 0,
+      ),
+      true,
+    );
+    assert.equal(report.summary.totalViolations, 0);
     assert.equal(report.inclusion.generator.punctuationSamples, 8);
     assert.equal(report.inclusion.generator.numberSamples, 8);
-    assert.equal(report.inclusion.downstream.punctuationSamples, 0);
-    assert.equal(report.inclusion.downstream.numberSamples, 0);
+    assert.equal(report.inclusion.downstream.punctuationSamples, 8);
+    assert.equal(report.inclusion.downstream.numberSamples, 8);
   });
 });
