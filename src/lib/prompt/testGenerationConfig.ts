@@ -49,6 +49,8 @@ export class TestConfigError extends Error {
 
 export const WORD_TEST_COUNTS = [10, 15, 20, 30, 50] as const;
 export const TIME_TEST_DURATIONS = [15, 30, 60, 120] as const;
+export type WordTestCount = (typeof WORD_TEST_COUNTS)[number];
+export type TimeTestDuration = (typeof TIME_TEST_DURATIONS)[number];
 
 export const APPLICATION_TEST_CONFIG: Readonly<TestGenerationConfig> = Object.freeze({
   mode: "words",

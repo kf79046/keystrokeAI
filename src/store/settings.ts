@@ -3,6 +3,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { WordSetKey } from "@/lib/wordbanks";
+import {
+  APPLICATION_TEST_CONFIG,
+  type WordTestCount,
+} from "@/lib/prompt/testGenerationConfig";
 
 export type CmdMode = "hidden" | "peek" | "full";
 export type CmdDock = "br" | "bl" | "tr" | "tl";
@@ -30,13 +34,14 @@ export interface SettingsState {
   };
   test: {
     defaultMode: TestMode;         // "words"
-    defaultLength: 15;             // 10|15|20|30|50
+    defaultLength: WordTestCount;  // 10|15|20|30|50
     wordSet: WordSetKey;           // "core5000"
     include_numbers: boolean;      // false
     include_punctuation: boolean;  // false
     maxRepeatPerWord?: number;     // 2 (optional; default in code paths)
     stopOnError: boolean;          // false: allow advance with mistakes
     strictSpace: boolean;          // false: Monkeytype-like spacing
+    blazeModeEnabled: boolean;
   };
   ai: {
     coachEnabled: boolean;
@@ -74,12 +79,12 @@ const DEFAULTS: SettingsState = {
     autoPeekDelayMs: 8000,
   },
   test: {
-    defaultMode: "words",
-    defaultLength: 15,
-    wordSet: "core5000",
-    include_numbers: false,
-    include_punctuation: false,
-    maxRepeatPerWord: 2,
+    defaultMode: APPLICATION_TEST_CONFIG.mode,
+    defaultLength: APPLICATION_TEST_CONFIG.wordCount as WordTestCount,
+    wordSet: APPLICATION_TEST_CONFIG.wordSet,
+    include_numbers: APPLICATION_TEST_CONFIG.includeNumbers,
+    include_punctuation: APPLICATION_TEST_CONFIG.includePunctuation,
+    maxRepeatPerWord: APPLICATION_TEST_CONFIG.maxRepeatPerWord,
     stopOnError: false,
     strictSpace: false,
     blazeModeEnabled: false,
@@ -164,7 +169,9 @@ export const useSettingsStore = create<SettingsState>()(persist((set, get) => ({
         const t = obj.test as any;
         const next = { ...get().test };
         if (isTestMode(t.defaultMode)) next.defaultMode = t.defaultMode;
-        if ([10,15,20,30,50].includes(Number(t.defaultLength))) next.defaultLength = Number(t.defaultLength);
+        if ([10,15,20,30,50].includes(Number(t.defaultLength))) {
+          next.defaultLength = Number(t.defaultLength) as WordTestCount;
+        }
         if (["core200", "core1000", "core5000"].includes(t.wordSet)) next.wordSet = t.wordSet;
         if (typeof t.include_numbers === "boolean") next.include_numbers = t.include_numbers;
         if (typeof t.include_punctuation === "boolean") next.include_punctuation = t.include_punctuation;

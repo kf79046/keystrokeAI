@@ -1945,3 +1945,22 @@ The first coding goal is not autonomous code generation. It is a reliable answer
 > Given a BlazeKey test configuration, did the generated typing test actually obey it?
 
 That quality tool becomes the first real tool used by the future BlazeKey Product Engineering Agent.
+
+---
+
+# 17. Phase 2 Adaptive Configuration Boundary
+
+Phase 2 was split into two sequential review units:
+
+```text
+fix/adaptive-config-core
+  canonical config, pure finalizer, StringLRU repair, seeded fallbacks, audit, unit tests
+
+fix/adaptive-config-runtime
+  TypingTest/TypingBox integration, last-test migration, append/prefetch,
+  effective results metadata, deterministic Playwright coverage, documentation
+```
+
+The canonical type intentionally excludes Blaze and capitalization. It controls only mode, count/duration, difficulty, punctuation, numbers, seed, word set, and repeat limit.
+
+The Phase 1 baseline of 52 violations remains historical evidence. The repaired audit invokes the same finalizer as the normal solo runtime and reports zero strict violations. A discriminated `finalized-solo` prompt is the explicit contract preventing `TypingBox` from mutating validated solo text a second time; party and legacy behavior remains unchanged.

@@ -26,6 +26,10 @@ import { mark } from "@/lib/perf";
 import { stdev } from "@/lib/statsMath";
 import { getTrendRevealProps, prepareResultsSeries } from "@/lib/resultsSeries";
 import AdSlot from "@/components/ads/AdSlot";
+import {
+  renderedTestConfig,
+  type FinalizedSoloPrompt,
+} from "@/lib/prompt/preparedPrompt";
 
 export interface ResultsPanelProps {
   wpm: number;
@@ -45,6 +49,7 @@ export interface ResultsPanelProps {
   avgWpm?: number;
   avgAcc?: number;
   flags?: { punctuation?: boolean; numbers?: boolean };
+  promptMetadata?: FinalizedSoloPrompt;
   usedConfig?: {
     mode: "words" | "time" | "quote" | "zen" | "custom";
     wordCount?: number | null;
@@ -78,6 +83,9 @@ export default function ResultsPanel(props: ResultsPanelProps) {
     setActiveGroup("postTest");
   }, [registerGroup, setActiveGroup, copyResults, props.onNextTest, props.onPracticeWeakSpots, props.onPracticeWeakSpotsTimed]);
   React.useEffect(() => { mark('results:mount'); }, []);
+  const displayConfig = props.promptMetadata
+    ? renderedTestConfig(props.promptMetadata)
+    : props.usedConfig;
   const {
     accuracy,
     analysis,
@@ -85,11 +93,19 @@ export default function ResultsPanel(props: ResultsPanelProps) {
     onNextTest,
     onPracticeWeakSpots,
     onPracticeWeakSpotsTimed,
-    usedDifficulty,
+    usedDifficulty: legacyUsedDifficulty,
     avgWpm,
     avgAcc,
-    flags,
+    flags: legacyFlags,
   } = props;
+  const usedDifficulty =
+    props.promptMetadata?.resolvedDifficulty ?? legacyUsedDifficulty;
+  const flags = props.promptMetadata
+    ? {
+        punctuation: props.promptMetadata.effectiveConfig.includePunctuation,
+        numbers: props.promptMetadata.effectiveConfig.includeNumbers,
+      }
+    : legacyFlags;
 
   const chartData = React.useMemo(
     () => prepareResultsSeries(wpmSeries, props.time, props.wpm).map((point) => ({
@@ -235,14 +251,14 @@ export default function ResultsPanel(props: ResultsPanelProps) {
         {usedDifficulty && (
           <div className="col-span-12">
             {(() => {
-              const resolvedLastRunConfig = props.usedConfig
+              const resolvedLastRunConfig = displayConfig
                 ? {
-                    mode: props.usedConfig.mode,
-                    wordCount: props.usedConfig.wordCount ?? null,
-                    durationSec: props.usedConfig.durationSec ?? null,
-                    language: props.usedConfig.language ?? 'english',
-                    punctuation: !!props.usedConfig.include_punctuation,
-                    numbers: !!props.usedConfig.include_numbers,
+                    mode: displayConfig.mode,
+                    wordCount: displayConfig.wordCount ?? null,
+                    durationSec: displayConfig.durationSec ?? null,
+                    language: displayConfig.language ?? 'english',
+                    punctuation: !!displayConfig.include_punctuation,
+                    numbers: !!displayConfig.include_numbers,
                   }
                 : undefined;
               return (
@@ -299,7 +315,7 @@ export default function ResultsPanel(props: ResultsPanelProps) {
               wpmTrend={wpmTrend}
               accuracyPct={accuracy}
               completed={true}
-              runSnapshot={props.usedConfig ?? null}
+              runSnapshot={displayConfig ?? null}
               onNextTest={onNextTest}
               onPracticeWeakSpots={onPracticeWeakSpots}
               onPracticeWeakSpotsTimed={onPracticeWeakSpotsTimed}
