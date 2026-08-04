@@ -35,13 +35,16 @@ flowchart LR
   Raw --> Normalize["TypingTest client post-processing"]
   Settings["bk:settings:v1"] --> Normalize
   Normalize --> Box["TypingBox rendered prompt"]
-  Box --> Results["results and /api/runs"]
-  Results --> Firestore["Firestore runs/totals/stats"]
+  Box --> Results["completion/results"]
+  Results --> Runs["POST /api/runs"]
+  Runs --> Firestore["Firestore runs/totals/stats"]
+  Results --> Analyze["POST /analyze"]
+  Analyze --> FastAPI["FastAPI feedback"]
 ```
 
 `TypingTest` sends mode, count or duration, component-local punctuation/number flags, `difficulty: "auto"`, and moving-average WPM/accuracy. `src/server/generatePrompt.ts` resolves difficulty, selects words from `EN_CORE_5K`, optionally injects numbers and sentence punctuation, and returns the generated seed and effective flags.
 
-The returned text is not rendered directly. `TypingTest` applies exact-count normalization, lowercasing/letter-only normalization, the easy-word filter, and a final sanitizer before passing the text to `TypingBox`. See `adaptive-test-flow.md` for the verified consequences.
+The returned text is not rendered directly. `TypingTest` applies exact-count normalization, lowercasing, the letters-only easy-word filter, and a final sanitizer before passing the text to `TypingBox`. See `adaptive-test-flow.md` for the verified consequences.
 
 Fallbacks are local:
 
@@ -50,6 +53,8 @@ Fallbacks are local:
 - Coder mode uses `buildCoderPrompt` and bypasses normal text sanitization.
 
 FastAPI also exposes `/generate` in `backend/app.py`, and `src/app/api/generate-text/route.ts` exposes an OpenAI-backed experiment. Neither is called by the active solo flow.
+
+On completion, AI feedback is different: `TypingTest` posts `/analyze` directly to the FastAPI base through `src/lib/http.ts`. Run persistence uses the Next.js `/api/runs` route and Firestore.
 
 ## Authentication and data ownership
 
@@ -63,6 +68,8 @@ Browser auth calls Next.js `src/app/api/auth/*`. Those routes proxy to `${NEXT_P
 `backend/database.py` requires `DATABASE_URL` in production and permits a clearly marked SQLite fallback only for local development. Alembic owns production schema creation; the current migration set contains `backend/alembic/versions/0001_initial_users_table.py`.
 
 The authenticated username is then used by Next.js Firestore routes as the application identity for game data. Some routes retain compatibility with Firebase ID tokens or guest IDs, but Firebase Auth is not the primary username/password account store.
+
+The Postgres `users` model still contains `xp_total` and `streak`, but the active run/streak flow updates Firestore totals and user projections instead. Those SQL columns must not be treated as the current game-stat source of truth.
 
 ## Multiplayer
 
@@ -105,8 +112,10 @@ Current caveats:
 - `test:unit` runs the Node test runner through `tsx` and currently targets `tests/unit/resultsSeries.test.ts`.
 - Jest remains configured for `npm test`, but it is not the convention used by the existing unit script.
 - Playwright runs Chromium, Firefox, and WebKit from `tests/e2e`.
+- The current Playwright smoke test mocks auth and generation; it does not exercise FastAPI, Postgres, Firestore, or the active server-generated punctuation/number pipeline.
 - `next.config.ts` currently skips type and lint failures during production builds.
 - The repository-wide type check has known baseline errors.
 - `npm run lint` still uses `next lint`, which is incompatible with the current Next.js setup.
 - The CSS compatibility scan now executes correctly but reports an existing warning baseline; CI marks that step informational.
 - `.github/workflows/cross-compat.yml` runs browser tests, a production build, and the informational CSS scan. It does not currently enforce unit tests, type checking, or linting.
+- CI has no backend, Postgres, migration, or FastAPI integration test.

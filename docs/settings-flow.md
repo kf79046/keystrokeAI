@@ -19,6 +19,13 @@ Relevant test defaults include:
 
 `src/components/settings/SettingsDrawer.tsx` edits this store. These settings are browser-local; they are not currently persisted to Postgres or Firestore.
 
+Not every stored default is applied by the solo boot path:
+
+- `defaultMode` is stored but not used to initialize `TypingTest`.
+- punctuation and number defaults do not initialize the filter chips; the settings drawer's “Applied on first load” copy is inaccurate for these fields.
+- `wordSet` affects local fallback, repeat filler, drills, and adaptive append, but the active server generator always uses `EN_CORE_5K`.
+- `blazeModeEnabled` exists in defaults/UI behavior but is missing from the declared `SettingsState.test` type and is never sent as `blaze: true` to the active generator.
+
 ### Current typing-screen controls
 
 `src/components/typing/TypingTest.tsx` separately initializes:
@@ -70,7 +77,9 @@ Consequences:
 - The active chip can say punctuation or numbers are enabled while the rendered prompt contains neither.
 - The settings drawer can disagree with the active chips.
 - A server response can accurately report enabled effective flags even though later client stages remove the corresponding content.
+- Results can show server `smartFlags`, selected-test chips from local requested values, and rendered text with three different effective stories.
 - Last-test persistence can restore a state different from current settings defaults.
+- Enabling Blaze mode changes interlude/prefetch presentation but does not activate the server's Blaze generation branch.
 - Coder mode follows a different policy because it intentionally preserves code punctuation and casing.
 
 ## Other settings storage
