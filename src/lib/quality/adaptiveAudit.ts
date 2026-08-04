@@ -1,6 +1,11 @@
-import { applyEasyFilter } from "@/lib/prompt/easyFilter";
-import { sanitizePrompt } from "@/lib/prompt/sanitize";
-import { mulberry32 } from "@/lib/prng";
+import {
+  finalizeGeneratedPrompt,
+  type FinalizePromptResult,
+} from "@/lib/prompt/finalizeGeneratedPrompt";
+import {
+  APPLICATION_TEST_CONFIG,
+  type TestGenerationConfig,
+} from "@/lib/prompt/testGenerationConfig";
 import {
   compareAdaptiveStages,
   inspectAdaptiveContent,
@@ -23,10 +28,6 @@ export const ADAPTIVE_FLAG_MATRIX: readonly AdaptiveFlags[] = [
 ];
 
 export const DEFAULT_ADAPTIVE_AUDIT_SEEDS = [101, 202, 303, 404] as const;
-export const DEFAULT_DOWNSTREAM_SETTINGS_FLAGS: AdaptiveFlags = {
-  punctuation: false,
-  numbers: false,
-};
 
 export type AdaptiveAuditObservation = {
   stage: AdaptiveAuditStage;
@@ -43,12 +44,11 @@ export type AdaptiveAuditReport = {
   schemaVersion: 1;
   policy: {
     disabled: "forbidden";
-    enabled: "allowed";
+    enabled: "required";
   };
   wordCount: number;
   seeds: number[];
   configurations: AdaptiveFlags[];
-  downstreamSettingsFlags: AdaptiveFlags;
   samplesGenerated: number;
   observations: AdaptiveAuditObservation[];
   inclusion: Record<AdaptiveAuditStage, {
@@ -66,47 +66,7 @@ export type AdaptiveAuditReport = {
 export type RunAdaptiveAuditOptions = {
   seeds?: readonly number[];
   wordCount?: number;
-  downstreamSettingsFlags?: AdaptiveFlags;
 };
-
-function deterministicFilterRandom(seed: number) {
-  return mulberry32((seed ^ 0x9e3779b9) >>> 0);
-}
-
-function runCurrentDownstreamStage(input: {
-  text: string;
-  seed: number;
-  easyPool: string[];
-  settingsFlags: AdaptiveFlags;
-}): { text: string; violations: AdaptiveViolation[] } {
-  let filtered = input.text;
-  const violations: AdaptiveViolation[] = [];
-
-  try {
-    filtered = applyEasyFilter(input.text, input.easyPool, {
-      maxLen: 8,
-      maxRepeat: 2,
-      random: deterministicFilterRandom(input.seed),
-    });
-  } catch (error) {
-    violations.push({
-      code: "DOWNSTREAM_STAGE_ERROR",
-      stage: "downstream",
-      message: "The easy-filter stage threw and the current caller kept the prior text.",
-      details: {
-        error: error instanceof Error ? error.message : String(error),
-      },
-    });
-  }
-
-  return {
-    text: sanitizePrompt(filtered, {
-      allowPunctuation: input.settingsFlags.punctuation,
-      allowNumbers: input.settingsFlags.numbers,
-    }),
-    violations,
-  };
-}
 
 function createObservation(input: {
   stage: AdaptiveAuditStage;
@@ -146,9 +106,6 @@ export async function runAdaptiveAudit(
 ): Promise<AdaptiveAuditReport> {
   const seeds = [...(options.seeds ?? DEFAULT_ADAPTIVE_AUDIT_SEEDS)];
   const wordCount = options.wordCount ?? 15;
-  const downstreamSettingsFlags = {
-    ...(options.downstreamSettingsFlags ?? DEFAULT_DOWNSTREAM_SETTINGS_FLAGS),
-  };
   const observations: AdaptiveAuditObservation[] = [];
   const easyPool = getEasyPoolSync(8);
 
@@ -162,6 +119,14 @@ export async function runAdaptiveAudit(
         recent_accuracy: 95,
         include_punctuation: requestedFlags.punctuation,
         include_numbers: requestedFlags.numbers,
+        seed,
+      };
+      const config: TestGenerationConfig = {
+        ...APPLICATION_TEST_CONFIG,
+        mode: "words",
+        wordCount,
+        includePunctuation: requestedFlags.punctuation,
+        includeNumbers: requestedFlags.numbers,
         seed,
       };
 
@@ -184,34 +149,58 @@ export async function runAdaptiveAudit(
         ),
       }));
 
-      const downstream = runCurrentDownstreamStage({
-        text: raw.text,
-        seed,
-        easyPool,
-        settingsFlags: downstreamSettingsFlags,
-      });
-      const downstreamReplay = runCurrentDownstreamStage({
-        text: rawReplay.text,
-        seed,
-        easyPool,
-        settingsFlags: downstreamSettingsFlags,
-      });
+      let downstream: FinalizePromptResult | null = null;
+      let downstreamReplay: FinalizePromptResult | null = null;
+      const downstreamViolations: AdaptiveViolation[] = [];
+      try {
+        downstream = finalizeGeneratedPrompt({
+          rawText: raw.text,
+          config,
+          expectedTokenCount: wordCount,
+          seed,
+          wordPool: easyPool,
+        });
+        downstreamReplay = finalizeGeneratedPrompt({
+          rawText: rawReplay.text,
+          config,
+          expectedTokenCount: wordCount,
+          seed,
+          wordPool: easyPool,
+        });
+      } catch (error) {
+        downstreamViolations.push({
+          code: "DOWNSTREAM_STAGE_ERROR",
+          stage: "downstream",
+          message: "The shared production finalization stage threw.",
+          details: {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
+
+      const downstreamText = downstream?.text ?? "";
+      const downstreamEffectiveFlags = downstream
+        ? {
+            punctuation: downstream.effectiveConfig.includePunctuation,
+            numbers: downstream.effectiveConfig.includeNumbers,
+          }
+        : { punctuation: false, numbers: false };
 
       observations.push(createObservation({
         stage: "downstream",
         seed,
         requestedFlags,
-        effectiveFlags: downstreamSettingsFlags,
+        effectiveFlags: downstreamEffectiveFlags,
         difficulty: raw.difficulty,
-        text: downstream.text,
+        text: downstreamText,
         expectedWordCount: wordCount,
         extraViolations: [
-          ...downstream.violations,
-          ...compareAdaptiveStages(raw.text, downstream.text, requestedFlags),
+          ...downstreamViolations,
+          ...compareAdaptiveStages(raw.text, downstreamText, requestedFlags),
           ...reproducibilityViolation(
             "downstream",
-            downstream.text,
-            downstreamReplay.text,
+            downstreamText,
+            downstreamReplay?.text ?? "",
           ),
         ],
       }));
@@ -249,12 +238,11 @@ export async function runAdaptiveAudit(
     schemaVersion: 1,
     policy: {
       disabled: "forbidden",
-      enabled: "allowed",
+      enabled: "required",
     },
     wordCount,
     seeds,
     configurations: ADAPTIVE_FLAG_MATRIX.map((flags) => ({ ...flags })),
-    downstreamSettingsFlags,
     samplesGenerated: ADAPTIVE_FLAG_MATRIX.length * seeds.length,
     observations,
     inclusion,
