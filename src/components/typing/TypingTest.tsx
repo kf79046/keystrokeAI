@@ -19,10 +19,8 @@ import {
 import clsx from 'clsx';
 import { fetchJSON } from '@/lib/http';
 import { fetchWithRetry } from '@/lib/fetchWithRetry';
-import { generateLocalPrompt, WORDS } from '@/lib/localPrompt';
 import { getWordset } from "@/lib/wordbanks";
-import { sampleNormalWords } from "@/lib/prompt/normalSampler";
-import { mulberry32, randomSeed } from "@/lib/prng";
+import { mulberry32 } from "@/lib/prng";
 import { StringLRU } from "@/lib/lru";
 import { buildAdaptiveBatch } from "@/lib/generator/adaptive";
 import { sanitizePrompt } from "@/lib/prompt/sanitize";
@@ -30,13 +28,9 @@ import BlazeOverlay from "./BlazeOverlay";
 import BlazeInterlude from "./BlazeInterlude";
 import { Switch } from "@/components/ui/switch";
 import * as Tooltip from "@/components/ui/tooltip";
-import { applyEasyFilter } from "@/lib/prompt/easyFilter";
-import { getEasyPool, getEasyPoolSync } from "@/lib/wordbanks/easyPool";
-import { toLowerLettersOnly, ensureExactWordCount, ensureExactNoRepeat } from '@/lib/prompt/normalize';
 import { buildCoderPrompt, type CoderLanguage } from "@/lib/coder-snippets";
 import { CoderLanguageChips } from "./CoderLanguageChips";
 import { enforceNoRepeat } from "@/lib/prompt/noRepeatLimiter";
-import { normalizePromptWords } from '@/lib/text';
 import ReadyToast from '@/components/typing/ReadyToast';
 import LogoLoader from '@/components/common/LogoLoader';
 import LatencyHUD from "@/components/dev/LatencyHUD";
@@ -56,6 +50,25 @@ import { useAICoach } from "@/store/aiCoach";
 import { useHydrated } from "@/lib/useHydrated";
 import { flushSync } from 'react-dom';
 import { upsertLatestWpmSample, withOfficialFinalSample } from '@/lib/resultsSeries';
+import { finalizeGeneratedPrompt } from "@/lib/prompt/finalizeGeneratedPrompt";
+import {
+  generateTimeFallback,
+  generateWordFallback,
+} from "@/lib/prompt/localFallback";
+import {
+  isFinalizedSoloPrompt,
+  specialRunConfig,
+  type FinalizedSoloPrompt,
+  type SpecialRunConfig,
+  type TypingPrompt,
+} from "@/lib/prompt/preparedPrompt";
+import {
+  APPLICATION_TEST_CONFIG,
+  normalizeTestGenerationConfig,
+  resolveInitialTestConfig,
+  type TestGenerationConfig,
+  type TestGenerationConfigInput,
+} from "@/lib/prompt/testGenerationConfig";
 
 // --- NEW: simple local history for adaptive difficulty ---
 const HISTORY_KEY = "ks_history_v1";
@@ -83,15 +96,6 @@ function afterNextPaint() {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
 }
-
-type FetchResponse = {
-  text: string;
-  mode: 'words';
-  count: number;
-  seed: number;
-  difficulty?: 'easy' | 'medium' | 'hard';
-  flags?: { punctuation: boolean; numbers: boolean };
-};
 
 const TypingTest: React.FC = () => {
   
@@ -132,11 +136,7 @@ const TypingTest: React.FC = () => {
   const [wordCount, setWordCount] = useState<number>(15);
   const [showPunctuation, setShowPunctuation] = useState(false);
   const [showNumbers, setShowNumbers] = useState(false);
-  // Defaults (reuse your settings default where available)
-  const DEFAULT_WORDS =
-    (typeof (useSettingsStore as any)?.getState === 'function'
-      ? (useSettingsStore as any).getState().test?.defaultLength
-      : undefined) ?? 15;
+  const DEFAULT_WORDS = APPLICATION_TEST_CONFIG.wordCount ?? 15;
 
   const DEFAULT_TIME_SEC = 15; // keep current behavior
 
@@ -164,34 +164,20 @@ const TypingTest: React.FC = () => {
   // Serialize prompt loads and drop stale results
   const loadTokenRef = useRef(0);
   const activeControllerRef = useRef<AbortController | null>(null);
-  const prefetchedRef = useRef<{ token: number; text: string } | null>(null);
-
-  // Keep the exact config actually used to generate the test
-  const lastUsedConfigRef = useRef<{
-    mode: 'words'|'time',
-    wordCount?: number | null,
-    durationSec?: number | null,
-    language?: string,
-    include_punctuation?: boolean,
-    include_numbers?: boolean,
-  }>({
-    mode: 'words',
-    wordCount: 15,
-    durationSec: null,
-    language: 'english',
-    include_punctuation: false,
-    include_numbers: false,
+  const prefetchedRef = useRef<{ token: number; prompt: FinalizedSoloPrompt } | null>(null);
+  const initializedConfigRef = useRef<TestGenerationConfig>({
+    ...APPLICATION_TEST_CONFIG,
   });
+  const activePromptRef = useRef<FinalizedSoloPrompt | null>(null);
+  const specialRunConfigRef = useRef<SpecialRunConfig | null>(null);
+  const appendSequenceRef = useRef(0);
 
   // Backend prompt state
-  const [currentPrompt, setCurrentPrompt] = useState<string>("");
+  const [currentPrompt, setCurrentPrompt] = useState<TypingPrompt>("");
   const sessionUsedSeeds = useRef<Set<number>>(new Set());
   // backend base URL routed via fetchJSON
   // results-view combo restart listener (moved below to avoid forward reference)
 
-  const usedDifficultyRef = useRef<"easy"|"medium"|"hard"|"auto">("auto");
-  const [smartUsedDifficulty, setSmartUsedDifficulty] = useState<null | 'easy' | 'medium' | 'hard'>(null);
-  const [smartFlags, setSmartFlags] = useState<null | { punctuation?: boolean; numbers?: boolean }>(null);
   const [avgWpm, setAvgWpm] = useState<number>(0);
   const [avgAcc, setAvgAcc] = useState<number>(100);
 
@@ -327,27 +313,44 @@ const TypingTest: React.FC = () => {
   // Apply last-used config before first load
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const settings = useSettingsStore.getState().test;
+    const persistedDefaults: TestGenerationConfigInput = {
+      mode:
+        settings.defaultMode === "time" || settings.defaultMode === "words"
+          ? settings.defaultMode
+          : APPLICATION_TEST_CONFIG.mode,
+      wordCount: settings.defaultLength,
+      durationSeconds: DEFAULT_TIME_SEC,
+      includeNumbers: settings.include_numbers,
+      includePunctuation: settings.include_punctuation,
+      wordSet: settings.wordSet,
+      maxRepeatPerWord:
+        settings.maxRepeatPerWord ?? APPLICATION_TEST_CONFIG.maxRepeatPerWord,
+    };
     const saved = (() => {
-      try { return useLastTestStore.getState().last ?? readLastTestSafe(); } catch { return null; }
-    })();
-    if (saved) {
-      try { devLog('applyFromLastTest', saved); } catch {}
-      if ((saved as any).mode === 'time') {
-        setMode('time');
-        setTestMode('time');
-        if (typeof (saved as any).durationSec === 'number') setDurationSec((saved as any).durationSec as number);
-        if (typeof (saved as any).duration === 'number') setDurationSec((saved as any).duration as number);
-      } else if ((saved as any).mode === 'words') {
-        setMode('words');
-        setTestMode('words');
-        if (typeof (saved as any).wordCount === 'number') setWordCount((saved as any).wordCount as number);
-        if (typeof (saved as any).count === 'number') setWordCount((saved as any).count as number);
+      try {
+        return useLastTestStore.getState().last?.config ?? readLastTestSafe();
+      } catch {
+        return null;
       }
-      if (typeof (saved as any).include_numbers === 'boolean') setShowNumbers((saved as any).include_numbers as boolean);
-      if (typeof (saved as any).include_punctuation === 'boolean') setShowPunctuation((saved as any).include_punctuation as boolean);
+    })();
+    const resolved = resolveInitialTestConfig({
+      persistedDefaults,
+      lastUsed: saved,
+    });
+    initializedConfigRef.current = { ...resolved };
+    try { devLog('applyResolvedTestConfig', resolved); } catch {}
+    setMode(resolved.mode);
+    setTestMode(resolved.mode);
+    if (resolved.mode === "time") {
+      setDurationSec(resolved.durationSeconds ?? DEFAULT_TIME_SEC);
+    } else {
+      setWordCount(resolved.wordCount ?? DEFAULT_WORDS);
     }
+    setShowNumbers(resolved.includeNumbers);
+    setShowPunctuation(resolved.includePunctuation);
     setBootConfigured(true);
-  }, []);
+  }, [DEFAULT_WORDS]);
 
   type GeneratePayload = {
     mode: 'words' | 'time';
@@ -359,11 +362,42 @@ const TypingTest: React.FC = () => {
     difficulty?: 'easy'|'medium'|'hard'|'auto';
     recent_wpm?: number;
     recent_accuracy?: number;
+    seed?: number;
   };
 
-  const loadPromptOnce = useCallback(async (opts?: { useFallback?: boolean; overrides?: Partial<GeneratePayload> } & { __prefetch?: boolean }) => {
-    const myToken = ++loadTokenRef.current;
+  const createRequestedConfig = useCallback((
+    override: TestGenerationConfigInput = {},
+  ): TestGenerationConfig => {
+    const selectedMode = override.mode ?? mode;
+    const candidate: TestGenerationConfigInput = {
+      ...initializedConfigRef.current,
+      mode: selectedMode,
+      wordCount:
+        selectedMode === "words"
+          ? override.wordCount ?? wordCount
+          : undefined,
+      durationSeconds:
+        selectedMode === "time"
+          ? override.durationSeconds ?? durationSec
+          : undefined,
+      includePunctuation:
+        override.includePunctuation ?? showPunctuation,
+      includeNumbers: override.includeNumbers ?? showNumbers,
+      ...override,
+    };
+    return normalizeTestGenerationConfig(
+      candidate,
+      initializedConfigRef.current,
+    );
+  }, [durationSec, mode, showNumbers, showPunctuation, wordCount]);
+
+  const loadPromptOnce = useCallback(async (opts?: {
+    useFallback?: boolean;
+    config?: TestGenerationConfig;
+    __prefetch?: boolean;
+  }) => {
     if (bootLockRef.current) return;
+    const myToken = ++loadTokenRef.current;
     bootLockRef.current = true;
     setPromptError(null);
     setPromptLoad('loading');
@@ -376,25 +410,53 @@ const TypingTest: React.FC = () => {
     activeControllerRef.current = ac;
 
     try {
-      let promptText: string | null = null;
-
       const isCoder = testMode === 'coder';
-      if (!opts?.useFallback && !isCoder) {
+      if (isCoder) {
+        const coderPrompt = buildCoderPrompt(coderLang, 25)
+          .split(/\s+/)
+          .filter(Boolean)
+          .slice(0, 25)
+          .join(" ");
+        activePromptRef.current = null;
+        specialRunConfigRef.current = specialRunConfig({
+          text: coderPrompt,
+          mode: "words",
+          wordCount: 25,
+          durationSec: null,
+          language: coderLang,
+        });
+        appendSequenceRef.current = 0;
+        React.startTransition(() => {
+          setIsTestComplete(false);
+          setTime(0);
+          setView("typing");
+          setCurrentPrompt(coderPrompt);
+          setPromptLoad("ready");
+        });
+        bootLockRef.current = false;
+        return;
+      }
+
+      const config = opts?.config ?? createRequestedConfig();
+      const wordPool = getWordset(config.wordSet);
+      let finalized = null as ReturnType<typeof finalizeGeneratedPrompt> | null;
+      let resolvedDifficulty: FinalizedSoloPrompt["resolvedDifficulty"];
+
+      if (!opts?.useFallback) {
         const hist = readHist();
         const avg = movingAvg(hist);
-        const useTime = mode === 'time';
-        const effectiveCount = useTime ? undefined : (opts?.overrides?.count ?? wordCount);
-
         const payload: GeneratePayload = {
-          mode: useTime ? 'time' : 'words',
-          count: effectiveCount,
-          duration: useTime ? durationSec : undefined,
-          include_punctuation: showPunctuation,
-          include_numbers: showNumbers,
+          mode: config.mode,
+          count: config.mode === "words" ? config.wordCount : undefined,
+          duration:
+            config.mode === "time" ? config.durationSeconds : undefined,
+          include_punctuation: config.includePunctuation,
+          include_numbers: config.includeNumbers,
           language: 'english',
-          difficulty: 'auto',
+          difficulty: config.difficulty,
           recent_wpm: avg.wpm,
           recent_accuracy: avg.acc,
+          seed: config.seed,
         };
         try { tl('prompt->request', { reqId: Date.now(), cfg: payload }); } catch {}
         try { devLog('prompt:request', payload); } catch {}
@@ -407,137 +469,90 @@ const TypingTest: React.FC = () => {
           fetchInit: {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...payload, ...(opts?.overrides || {}) }),
+            body: JSON.stringify(payload),
             signal: bootAbortRef.current?.signal as unknown as AbortSignal,
           },
         });
-        promptText = data?.text ?? data?.prompt ?? data?.data?.prompt ?? null;
-        if (data?.seed != null) try { sessionUsedSeeds.current.add(Number(data.seed)); } catch {}
-        if (data?.difficulty) { usedDifficultyRef.current = data.difficulty; setSmartUsedDifficulty(data.difficulty); }
-        if (data?.flags) setSmartFlags(data.flags);
+        const promptText = data?.text ?? data?.prompt ?? data?.data?.prompt;
+        if (!String(promptText ?? "").trim()) {
+          throw new Error("Generation response did not include prompt text");
+        }
+        if (
+          !data?.flags ||
+          data.flags.punctuation !== config.includePunctuation ||
+          data.flags.numbers !== config.includeNumbers
+        ) {
+          throw new Error("Generation response flags do not match the requested config");
+        }
+        if (
+          data?.difficulty !== "easy" &&
+          data?.difficulty !== "medium" &&
+          data?.difficulty !== "hard"
+        ) {
+          throw new Error("Generation response did not include a resolved difficulty");
+        }
+        resolvedDifficulty = data.difficulty;
+        const responseSeed = Number(data.seed);
+        if (!Number.isSafeInteger(responseSeed)) {
+          throw new Error("Generation response did not include a valid seed");
+        }
+        sessionUsedSeeds.current.add(responseSeed);
+        finalized = finalizeGeneratedPrompt({
+          rawText: String(promptText),
+          config,
+          expectedTokenCount: config.mode === "words" ? config.wordCount! : 200,
+          seed: responseSeed,
+          wordPool,
+        });
         try { tl('prompt->received', { reqId: 'auto', promptId: data?.seed ?? 'n/a' }); } catch {}
         try { devLog('prompt:received', { seed: data?.seed }); } catch {}
-      }
-
-      if (!promptText) {
-        const isCoder = testMode === 'coder';
-        const useTime = mode === 'time';
-        const effectiveCount = useTime ? undefined : (opts?.overrides?.count ?? wordCount ?? 15);
-        const wc = useTime ? 200 : Number(effectiveCount ?? 15);
-
-        if (isCoder) {
-          // Build coder prompt locally, preserve punctuation/case, fixed 25 tokens
-          promptText = buildCoderPrompt(coderLang, 25);
-        } else if (!useTime) {
-          // Use fresh normal sampler for words mode
-          const settings = useSettingsStore.getState();
-          const bank = getWordset(settings.test.wordSet ?? "core5000");
-
-          // restore LRU
-          let lruSeed: string[] = [];
-          try { lruSeed = JSON.parse(localStorage.getItem("bk-recent-words") || "[]"); } catch {}
-          const lru = new StringLRU(1000, Array.isArray(lruSeed) ? lruSeed : []);
-          const prng = mulberry32(randomSeed());
-
-          const picks = sampleNormalWords({
-            bank,
-            prng,
-            lru,
-            count: wc,
-            dist: { easy: 70, medium: 25, hard: 5 },
-          });
-
-          try { localStorage.setItem("bk-recent-words", JSON.stringify(lru.snapshot())); } catch {}
-          promptText = picks.join(" ");
-
-          if (process.env.NODE_ENV !== "production") {
-            console.debug("[prompt] normal", { set: settings.test.wordSet, count: wc });
-          }
-        } else {
-          // Use existing local prompt for time mode
-          promptText = generateLocalPrompt({ wordCount: wc });
-        }
-      }
-
-      let finalPrompt = String(promptText);
-      {
-        const useTime = mode === 'time';
-        const isCoder = testMode === 'coder';
-        const effectiveCount = useTime ? undefined : (opts?.overrides?.count ?? wordCount ?? 15);
-
-        const usedCfg = {
-          mode: useTime ? 'time' : 'words',
-          wordCount: useTime ? null : (isCoder ? 25 : (typeof effectiveCount === 'number' ? effectiveCount : null)),
-          durationSec: useTime ? durationSec : null,
-          language: isCoder ? coderLang : 'english',
-          include_punctuation: showPunctuation,
-          include_numbers: showNumbers,
-        } as const;
-        lastUsedConfigRef.current = usedCfg;
-        try { useLastTestStore.getState().save({
-          mode: usedCfg.mode,
-          count: usedCfg.wordCount == null ? undefined : usedCfg.wordCount,
-          duration: usedCfg.durationSec == null ? undefined : usedCfg.durationSec,
-          include_numbers: usedCfg.include_numbers,
-          include_punctuation: usedCfg.include_punctuation,
-        }); } catch {}
-
-        if (!useTime && !isCoder) {
-          const n = Number(effectiveCount ?? 15);
-          if (Number.isFinite(n) && n > 0) {
-            finalPrompt = ensureExactNoRepeat(finalPrompt, n);
-          }
-        }
-      }
-      {
-        const isCoder = testMode === 'coder';
-        if (!isCoder) {
-          finalPrompt = toLowerLettersOnly(finalPrompt, 'en-US');
-          finalPrompt = normalizePromptWords(finalPrompt);
-        } else {
-          // coder: ensure exact token count only
-          const tok = finalPrompt.split(/\s+/).filter(Boolean);
-          finalPrompt = (tok.length > 25 ? tok.slice(0, 25) : tok).join(" ");
-        }
-      }
-
-      // --- Default Easy Words pass (≤8 letters; letters-only; avoid adjacent duplicates)
-      if (testMode !== 'coder') {
+      } else {
+        let recentWords: string[] = [];
         try {
-          const poolSync = getEasyPoolSync(8);
-          finalPrompt = applyEasyFilter(finalPrompt, poolSync, { maxLen: 8, maxRepeat: 2 });
-          // Opportunistic client-side enrichment if optional Monkeytype file exists
-          getEasyPool().then(extra => {
-            if (extra.length > poolSync.length) {
-              finalPrompt = applyEasyFilter(finalPrompt, extra, { maxLen: 8, maxRepeat: 2 });
-            }
-          }).catch(() => {});
+          recentWords = JSON.parse(localStorage.getItem("bk-recent-words") || "[]");
         } catch {}
-      }
-      if (myToken !== loadTokenRef.current) { try { devLog('prompt:drop-stale', { token: myToken }); } catch {}; return; }
-      {
-        if (testMode !== 'coder') {
-          const allowPunctuation = useSettingsStore.getState().test.include_punctuation === true;
-          const allowNumbers = useSettingsStore.getState().test.include_numbers === true;
-          finalPrompt = sanitizePrompt(finalPrompt, { allowPunctuation, allowNumbers });
-        }
+        finalized = config.mode === "time"
+          ? generateTimeFallback({ config, wordPool, recentWords })
+          : generateWordFallback({ config, wordPool, recentWords });
       }
 
-      if ((opts as any)?.__prefetch) {
-        prefetchedRef.current = { token: myToken, text: finalPrompt };
+      if (myToken !== loadTokenRef.current) {
+        try { devLog('prompt:drop-stale', { token: myToken }); } catch {}
+        return;
+      }
+      if (!finalized) throw new Error("Prompt finalization did not produce a result");
+
+      const prepared: FinalizedSoloPrompt = {
+        kind: "finalized-solo",
+        text: finalized.text,
+        seed: finalized.seed,
+        requestedConfig: finalized.requestedConfig,
+        effectiveConfig: finalized.effectiveConfig,
+        resolvedDifficulty,
+      };
+
+      if (opts?.__prefetch) {
+        prefetchedRef.current = { token: myToken, prompt: prepared };
         setPromptLoad('ready');
       } else {
+        activePromptRef.current = prepared;
+        specialRunConfigRef.current = null;
+        appendSequenceRef.current = 0;
+        initializedConfigRef.current = { ...prepared.requestedConfig };
+        useLastTestStore.getState().save(prepared.requestedConfig);
         React.startTransition(() => {
           setIsTestComplete(false);
           setTime(0);
           setView('typing');
-          setCurrentPrompt(finalPrompt);
+          setCurrentPrompt(prepared);
           setPromptLoad('ready');
         });
       }
+      bootLockRef.current = false;
       try { tl('prompt->apply', { promptId: 'n/a' }); } catch {}
       try { devLog('prompt:apply'); } catch {}
     } catch (err: unknown) {
+      if (myToken !== loadTokenRef.current) return;
       console.error('[prompt boot] error', err);
       const message = err instanceof Error
         ? err.message
@@ -547,19 +562,18 @@ const TypingTest: React.FC = () => {
       bootLockRef.current = false;
       return;
     }
-  }, [mode, durationSec, wordCount, showPunctuation, showNumbers, testMode, coderLang]);
+  }, [coderLang, createRequestedConfig, testMode]);
 
   const busyRef = useRef(false);
   const lastRestartRef = useRef<number>(0);
-  const pendingRestartRef = useRef<{
-    count?: number;
-    flags?: { include_punctuation?: boolean; include_numbers?: boolean }
-  } | null>(null);
+  const pendingRestartRef = useRef<TestGenerationConfigInput | null>(null);
   const cooldownTimerRef = useRef<number | null>(null);
   const COOLDOWN_MS = 1000;
 
-  const handleRestart = useCallback(async (desiredCount?: number, flagOverrides?: { include_punctuation?: boolean; include_numbers?: boolean }) => {
-    try { devLog('restartTest()', { desiredCount, flags: flagOverrides }); } catch {}
+  const handleRestart = useCallback(async (
+    override: TestGenerationConfigInput = {},
+  ) => {
+    try { devLog('restartTest()', { override }); } catch {}
     // Force the page to the top BEFORE any state change so the typing column
     // (position:relative) renders below the fixed filter bar — regardless of
     // how far the user had scrolled the results page. Synchronous so it
@@ -581,33 +595,36 @@ const TypingTest: React.FC = () => {
     setAvgWpm(avg.wpm);
     setAvgAcc(avg.acc);
     bootLockRef.current = false;
-    const overrides: Partial<GeneratePayload> = {
-      count: desiredCount,
-      include_punctuation: flagOverrides?.include_punctuation,
-      include_numbers: flagOverrides?.include_numbers,
-    };
     try { tl('restartTest()', { reason: 'handleRestart', prevRunId: 'n/a' }); } catch {}
     // Skip prefetch fast-path for coder mode to avoid stale non-code prompts
     if (testMode !== 'coder') {
       const pf = prefetchedRef.current;
-      if (pf?.text) {
+      if (pf?.prompt && Object.keys(override).length === 0) {
         prefetchedRef.current = null;
+        activePromptRef.current = pf.prompt;
+        specialRunConfigRef.current = null;
+        appendSequenceRef.current = 0;
+        initializedConfigRef.current = { ...pf.prompt.requestedConfig };
+        useLastTestStore.getState().save(pf.prompt.requestedConfig);
         React.startTransition(() => {
-          setCurrentPrompt(pf.text);
+          setCurrentPrompt(pf.prompt);
           setPromptLoad('ready');
         });
         return;
       }
+      prefetchedRef.current = null;
     } else {
       // entering coder: ensure no prefetch leaks in
       prefetchedRef.current = null;
     }
-    await loadPromptOnce({ overrides });
-  }, [loadPromptOnce, testMode]);
+    const config = testMode === "coder"
+      ? undefined
+      : createRequestedConfig(override);
+    await loadPromptOnce({ config });
+  }, [createRequestedConfig, loadPromptOnce, testMode]);
 
   const safeRestart = useCallback(async (
-    desiredCount?: number,
-    flagOverrides?: { include_punctuation?: boolean; include_numbers?: boolean }
+    override: TestGenerationConfigInput = {},
   ) => {
     // Snap to top synchronously on every restart entry path (including throttled ones)
     // before any work is queued. Cheap, idempotent, and bulletproofs the position.
@@ -628,13 +645,13 @@ const TypingTest: React.FC = () => {
         if (!p) return;
         // attempt to flush the latest request
         pendingRestartRef.current = null;
-        void safeRestart(p.count, p.flags);
+        void safeRestart(p);
       }, Math.max(0, delayMs));
     };
 
     // If we can't run now, queue latest and schedule trailing
     if (busyRef.current || elapsed < COOLDOWN_MS) {
-      pendingRestartRef.current = { count: desiredCount, flags: flagOverrides };
+      pendingRestartRef.current = { ...override };
       const delay = busyRef.current ? 50 : (COOLDOWN_MS - elapsed + 10);
       scheduleTrailing(delay);
       return;
@@ -644,7 +661,7 @@ const TypingTest: React.FC = () => {
     lastRestartRef.current = now;
     busyRef.current = true;
     try {
-      await handleRestart(desiredCount, flagOverrides);
+      await handleRestart(override);
     } finally {
       busyRef.current = false;
       // If another request arrived while we were busy, flush it quickly
@@ -652,7 +669,7 @@ const TypingTest: React.FC = () => {
         const p = pendingRestartRef.current;
         pendingRestartRef.current = null;
         // allow paint/layout to settle
-        setTimeout(() => { void safeRestart(p?.count, p?.flags); }, 0);
+        setTimeout(() => { void safeRestart(p ?? {}); }, 0);
       }
       try {
         requestAnimationFrame(() => {
@@ -773,14 +790,10 @@ const TypingTest: React.FC = () => {
   // Prefetch next prompt while viewing results
   useEffect(() => {
     if (view !== 'results') return;
-    const overrides: Partial<GeneratePayload> = {
-      count: wordCount,
-      include_punctuation: showPunctuation,
-      include_numbers: showNumbers,
-    };
-    // @ts-ignore
-    loadPromptOnce({ overrides, __prefetch: true }).catch(() => {});
-  }, [view, wordCount, showPunctuation, showNumbers, loadPromptOnce]);
+    const config =
+      activePromptRef.current?.requestedConfig ?? createRequestedConfig();
+    loadPromptOnce({ config, __prefetch: true }).catch(() => {});
+  }, [createRequestedConfig, loadPromptOnce, view]);
 
   // AI Coach: practice launcher builds a 30-word custom drill
   const startCustomRun = useCallback((opts: { words: string[]; mode: 'words'|'time'; durationSec?: number }) => {
@@ -796,6 +809,16 @@ const TypingTest: React.FC = () => {
       }
     }
     const prompt = opts.words.join(' ');
+    activePromptRef.current = null;
+    specialRunConfigRef.current = specialRunConfig({
+      text: prompt,
+      mode: opts.mode,
+      wordCount: opts.mode === "words" ? opts.words.length : null,
+      durationSec:
+        opts.mode === "time" ? opts.durationSec ?? DEFAULT_TIME_SEC : null,
+      language: "english",
+    });
+    appendSequenceRef.current = 0;
     React.startTransition(() => {
       setIsTestComplete(false);
       setTime(0);
@@ -898,6 +921,8 @@ const TypingTest: React.FC = () => {
 
   const [syncState, setSyncState] = useState<"synced"|"queued"|"syncing"|"error">("synced");
   const handleTestComplete = async (finalWpm: number, finalAccuracy: number, finalTime: number, finalTypedText?: string) => {
+    const completedPrompt = activePromptRef.current;
+    const completedSpecialConfig = specialRunConfigRef.current;
     setIsTestComplete(true);
     setWpm(finalWpm);
     setAccuracy(finalAccuracy);
@@ -912,14 +937,11 @@ const TypingTest: React.FC = () => {
       const tasks: Promise<unknown>[] = [];
       try {
         // 1) Prefetch next prompt for the upcoming run
-        // @ts-ignore internal prefetch flag supported in your loader
+        const config =
+          completedPrompt?.requestedConfig ?? createRequestedConfig();
         tasks.push(loadPromptOnce({
           __prefetch: true,
-          overrides: {
-            count: (mode === 'words' ? wordCount : undefined),
-            include_punctuation: showPunctuation,
-            include_numbers: showNumbers,
-          }
+          config,
         }));
 
         // 2) Hydrate totals now so results won't wait on it
@@ -958,7 +980,9 @@ const TypingTest: React.FC = () => {
 
     // Guarantee a normalized history append for both modes (words/time)
     try {
-      const used = lastUsedConfigRef.current;
+      const used = completedPrompt?.effectiveConfig;
+      const special = completedSpecialConfig;
+      if (!used && !special) throw new Error("No active run config for history");
       const globalWithCrypto = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
       const id = globalWithCrypto.crypto?.randomUUID ? globalWithCrypto.crypto.randomUUID() : String(Date.now());
       // append expects a run-like object; cast narrowly to avoid 'any'
@@ -968,8 +992,11 @@ const TypingTest: React.FC = () => {
         wpm: finalWpm,
         acc: finalAccuracy,
         durationSec: Math.round(finalTime ?? 0),
-        mode: used.mode,
-        words: used.mode === 'words' ? (used.wordCount ?? undefined) : undefined,
+        mode: used?.mode ?? special!.mode,
+        words:
+          (used?.mode ?? special!.mode) === "words"
+            ? used?.wordCount ?? special?.wordCount ?? undefined
+            : undefined,
       });
     } catch {}
     if (!finalTypedText) return;
@@ -1012,10 +1039,23 @@ const TypingTest: React.FC = () => {
     // this browser while never actually landing in Postgres/Firestore, so
     // it silently vanishes on any other device/browser for the same account.
     try {
+      const completedConfig = completedPrompt?.effectiveConfig;
+      const specialConfig = completedSpecialConfig;
       const payload = {
-        mode: view === 'typing' ? (mode === 'time' ? `time/${durationSec}` : `words/${wordCount}`) : 'words',
+        mode: completedConfig
+          ? completedConfig.mode === "time"
+            ? `time/${completedConfig.durationSeconds}`
+            : `words/${completedConfig.wordCount}`
+          : specialConfig?.mode === "time"
+            ? `time/${specialConfig.durationSec}`
+            : `words/${specialConfig?.wordCount ?? 0}`,
         durationSec: Math.round(finalTime),
-        wordsCount: mode === 'words' ? wordCount : undefined,
+        wordsCount:
+          completedConfig?.mode === "words"
+            ? completedConfig.wordCount
+            : specialConfig?.mode === "words"
+              ? specialConfig.wordCount ?? undefined
+              : undefined,
         wpm: Math.round(finalWpm),
         accuracy: Math.round(finalAccuracy),
       };
@@ -1100,19 +1140,29 @@ const TypingTest: React.FC = () => {
 
   // (old header/filter/stats measuring effect removed; consolidated above)
   const memoNewPrompt = React.useCallback(async () => { await safeRestart(); }, [safeRestart]);
-  const memoAppendPrompt = React.useCallback(async () => {
-    const seed = randomSeed();
+  const memoAppendPrompt = React.useCallback(async (existingWords: string[]) => {
+    const active = activePromptRef.current;
+    if (!active || active.requestedConfig.mode !== "time") return "";
+    appendSequenceRef.current += 1;
+    const seed = (
+      active.seed ^
+      Math.imul(appendSequenceRef.current, 0x9e3779b9)
+    ) >>> 0;
     const prng = mulberry32(seed);
     let lruList: string[] = [];
     try { lruList = JSON.parse(localStorage.getItem('bk-recent-words') || '[]'); } catch {}
     const lru = new StringLRU(400, Array.isArray(lruList) ? lruList : []);
-    // Use the selected word set as base for append
-    const base = getWordset(useSettingsStore.getState().test.wordSet ?? "core5000");
+    const base = getWordset(active.requestedConfig.wordSet);
     const add = buildAdaptiveBatch({ count: 120, poolSize: 600, prng, baseBank: base, avoid: lru });
     try { localStorage.setItem('bk-recent-words', JSON.stringify(lru.snapshot())); } catch {}
-    const allowPunctuation = useSettingsStore.getState().test.include_punctuation === true;
-    const allowNumbers = useSettingsStore.getState().test.include_numbers === true;
-    return sanitizePrompt(add.join(' '), { allowPunctuation, allowNumbers });
+    return finalizeGeneratedPrompt({
+      rawText: add.join(" "),
+      config: active.requestedConfig,
+      expectedTokenCount: 120,
+      seed,
+      wordPool: base,
+      priorTokens: existingWords,
+    }).text;
   }, []);
 
   // Consider a run active as soon as focus is on in typing view
@@ -1127,6 +1177,13 @@ const TypingTest: React.FC = () => {
   useEffect(() => {
     try { useAICoach.setState({ enabled: coachEnabled, includeDigraphs, intensity: aiIntensity }); } catch {}
   }, [coachEnabled, includeDigraphs, aiIntensity]);
+
+  const activeFinalizedPrompt = isFinalizedSoloPrompt(currentPrompt)
+    ? currentPrompt
+    : null;
+  const activeSpecialRunConfig = activeFinalizedPrompt
+    ? null
+    : specialRunConfigRef.current;
 
   return (
     <div ref={rootRef} className="min-h-dvh relative" data-view={view} data-run={isRunning ? 'true' : 'false'} data-bk-generating={promptLoad === 'loading' && !currentPrompt ? 'true' : 'false'}>
@@ -1154,7 +1211,7 @@ const TypingTest: React.FC = () => {
               onClick={async () => {
                 const next = !showPunctuation;
                 setShowPunctuation(next);
-                await safeRestart(undefined, { include_punctuation: next });
+                await safeRestart({ includePunctuation: next });
               }}
             >
               <AtSign className="h-4 w-4" />
@@ -1174,7 +1231,7 @@ const TypingTest: React.FC = () => {
               onClick={async () => {
                 const next = !showNumbers;
                 setShowNumbers(next);
-                await safeRestart(undefined, { include_numbers: next });
+                await safeRestart({ includeNumbers: next });
               }}
             >
               <Hash className="h-4 w-4" />
@@ -1199,6 +1256,9 @@ const TypingTest: React.FC = () => {
                 onClick={async () => {
                   // clear prefetch when switching modes
                   prefetchedRef.current = null;
+                  const nextDuration = enteredRef.current.time
+                    ? durationSec
+                    : DEFAULT_TIME_SEC;
                   flushSync(() => {
                     setTestMode('time');
                     setMode('time');
@@ -1209,7 +1269,10 @@ const TypingTest: React.FC = () => {
                     setView('typing');
                   });
                   await nextTick();
-                  await restartRef.current?.();
+                  await restartRef.current?.({
+                    mode: "time",
+                    durationSeconds: nextDuration,
+                  });
                 }}
               >
                 <Clock className="h-4 w-4" />
@@ -1237,7 +1300,10 @@ const TypingTest: React.FC = () => {
                     setView('typing');
                   });
                   await nextTick();
-                  await restartRef.current?.(DEFAULT_WORDS);
+                  await restartRef.current?.({
+                    mode: "words",
+                    wordCount: DEFAULT_WORDS,
+                  });
                 }}
               >
                 <span className="text-lg font-bold">A</span>
@@ -1266,7 +1332,7 @@ const TypingTest: React.FC = () => {
                     setView('typing');
                   });
                   await nextTick();
-                  await restartRef.current?.(25);
+                  await restartRef.current?.();
                 }}
               >
                 {"<> coder"}
@@ -1321,7 +1387,14 @@ const TypingTest: React.FC = () => {
                           : 'text-gray-400 hover:bg-gray-700/50 hover:text-gray-300'
                       )}
                       aria-pressed={durationSec === duration}
-              onClick={async () => { setDurationSec(duration); setView('typing'); await safeRestart(); }}
+              onClick={async () => {
+                setDurationSec(duration);
+                setView('typing');
+                await safeRestart({
+                  mode: "time",
+                  durationSeconds: duration,
+                });
+              }}
                     >
                       {duration}s
                       {durationSec === duration && (
@@ -1345,7 +1418,10 @@ const TypingTest: React.FC = () => {
                           : 'text-gray-400 hover:bg-gray-700/50 hover:text-gray-300'
                       )}
                       aria-pressed={wordCount === count}
-              onClick={async () => { setWordCount(count); await safeRestart(count); }}
+              onClick={async () => {
+                setWordCount(count);
+                await safeRestart({ mode: "words", wordCount: count });
+              }}
                     >
                       {count}
                       {wordCount === count && (
@@ -1365,7 +1441,7 @@ const TypingTest: React.FC = () => {
                     setMode('words');
                     setWordCount(25);
                     setView('typing');
-                    await safeRestart(25);
+                    await safeRestart();
                   }}
                 />
               )}
@@ -1486,8 +1562,8 @@ const TypingTest: React.FC = () => {
               </div>
 
               {/* Smart Test badge */}
-              {smartUsedDifficulty && (
-                <span className="bk-badge bk-badge--fire">AI Smart Test — {smartUsedDifficulty}</span>
+              {activeFinalizedPrompt?.resolvedDifficulty && (
+                <span className="bk-badge bk-badge--fire">AI Smart Test — {activeFinalizedPrompt.resolvedDifficulty}</span>
               )}
             </div>
           </div>
@@ -1544,11 +1620,14 @@ const TypingTest: React.FC = () => {
               time={time}
               analysis={analysisResult}
               wpmSeries={wpmSeries}
-              usedDifficulty={smartUsedDifficulty ?? undefined}
               avgWpm={avgWpm}
               avgAcc={avgAcc}
-              flags={smartFlags ?? undefined}
-              usedConfig={lastUsedConfigRef.current}
+              promptMetadata={activeFinalizedPrompt ?? undefined}
+              flags={activeSpecialRunConfig ? {
+                punctuation: activeSpecialRunConfig.include_punctuation,
+                numbers: activeSpecialRunConfig.include_numbers,
+              } : undefined}
+              usedConfig={activeSpecialRunConfig ?? undefined}
 
               onNextTest={async () => { try { tl('results New test click'); } catch {} ; await safeRestart(); }}
               onPracticeWeakSpots={handlePracticeWeakSpots}

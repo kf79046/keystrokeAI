@@ -119,3 +119,11 @@ Current caveats:
 - The CSS compatibility scan now executes correctly but reports an existing warning baseline; CI marks that step informational.
 - `.github/workflows/cross-compat.yml` runs browser tests, a production build, and the informational CSS scan. It does not currently enforce unit tests, type checking, or linting.
 - CI has no backend, Postgres, migration, or FastAPI integration test.
+
+## Adaptive prompt boundary
+
+The normal solo path now resolves one canonical test configuration before generation. `/api/generate-proxy` and seeded local fallbacks feed the same pure prompt finalizer, which returns the rendered text, requested configuration, content-derived effective configuration, seed, stages, and warnings.
+
+`TypingTest` owns the active finalized snapshot across rendering, timed append, results, and last-test persistence. Prefetch stores a complete prepared snapshot and does not replace active-run metadata until activation. `TypingBox` skips its legacy repeat mutation only for the explicit `finalized-solo` prompt variant, preserving party and legacy behavior.
+
+The adaptive audit consumes this production finalizer directly. Its Phase 1 baseline was 52 violations; the repaired strict matrix is zero.

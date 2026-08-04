@@ -23,6 +23,11 @@ import { devLog } from "@/lib/devLog";
 import useLockScroll from "@/hooks/useLockScroll";
 import { useInputLatencyProbe } from "@/hooks/useInputLatencyProbe";
 import { officialWpm, accuracy as accFn } from "@/lib/statsMath";
+import {
+  isFinalizedSoloPrompt,
+  promptText,
+  type TypingPrompt,
+} from "@/lib/prompt/preparedPrompt";
 import { computeWordLineLayout, calculateViewportTop, applyViewportTransform, VISIBLE_LINES, type LineLayout } from "@/lib/textLayout";
 import { useReducedMotion } from "framer-motion";
 import { weakspot } from "@/ai/weakspot";
@@ -76,9 +81,9 @@ export interface TypingBoxProps {
   durationSec?: number;
   onStatsUpdate: (wpm: number, accuracy: number, time: number) => void;
   onTestComplete: (wpm: number, accuracy: number, time: number, typedInput: string) => void;
-  prompt: string;
+  prompt: TypingPrompt;
   onRequestNewPrompt?: () => void;
-  onRequestAppendPrompt?: () => void;
+  onRequestAppendPrompt?: (existingWords: string[]) => Promise<string>;
   isLoading?: boolean;
   /** Optional party-mode hook. Absent = solo typing (default). */
   party?: TypingBoxPartyHook;
@@ -88,6 +93,7 @@ export interface TypingBoxProps {
 type KeyEvent = { k: string; __ts?: number };
 
 const TypingBox: React.FC<TypingBoxProps> = ({ mode, durationSec = 15, onStatsUpdate, onTestComplete, prompt, onRequestNewPrompt, onRequestAppendPrompt, isLoading: externalLoading = false, party }) => {
+  const finalizedSolo = isFinalizedSoloPrompt(prompt);
   // Stable ref so we don't put `party` in any deps that would re-run on
   // every parent render. Solo mode keeps this ref undefined and pays zero cost.
   const partyRef = useRef<TypingBoxPartyHook | undefined>(party);
@@ -296,10 +302,16 @@ const TypingBox: React.FC<TypingBoxProps> = ({ mode, durationSec = 15, onStatsUp
 
     try {
       appendingRef.current = true;
-      const extra = await onRequestAppendPrompt();
+      const extra = await onRequestAppendPrompt(words);
       if (!extra || !extra.trim()) return;
       const add = extra.split(/\s+/).filter(Boolean);
       if (!add.length) return;
+
+      if (finalizedSolo) {
+        setWords((previous) => previous.concat(add));
+        setInputWords((previous) => previous.concat(Array(add.length).fill("")));
+        return;
+      }
 
       // append words and expand input slots (with repeat limiter)
       try {
@@ -330,7 +342,7 @@ const TypingBox: React.FC<TypingBoxProps> = ({ mode, durationSec = 15, onStatsUp
     } finally {
       appendingRef.current = false;
     }
-  }, [mode, words.length, onRequestAppendPrompt]);
+  }, [mode, words.length, onRequestAppendPrompt, finalizedSolo]);
 
   const clampTop = useCallback((top: number) => {
     const maxLines = Math.max(1, lineLayout.totalLines);
@@ -361,7 +373,9 @@ const TypingBox: React.FC<TypingBoxProps> = ({ mode, durationSec = 15, onStatsUp
   }, [words, inputWords]);
 
   /* ───────── Load prompt from prop ───────── */
-  const resetFromPrompt = useCallback((text: string) => {
+  const resetFromPrompt = useCallback((prepared: TypingPrompt) => {
+    const text = promptText(prepared);
+    const skipMutation = isFinalizedSoloPrompt(prepared);
     // Dev-only: capture viewport position before reset
     const viewportEl = containerRef.current?.querySelector('[data-bk-viewport]') as HTMLElement | null;
     const beforeRect = DEBUG_LAYOUT ? captureViewportRect(viewportEl) : null;
@@ -372,8 +386,9 @@ const TypingBox: React.FC<TypingBoxProps> = ({ mode, durationSec = 15, onStatsUp
     setRunSeq((x) => x + 1);
     setIsLoading(true);
     let nextWords = text.split(" ").filter(Boolean);
-    // Enforce per-run max repeats (covers backend/local/time/words/custom)
-    try {
+    // Finalized solo prompts already passed the shared deterministic mutation
+    // boundary. Party and legacy string prompts retain the existing limiter.
+    if (!skipMutation) try {
       const settings = useSettingsStore.getState?.();
       const max = Number(settings?.test?.maxRepeatPerWord ?? 2);
       const allowPunctuation = settings?.test?.include_punctuation === true;
@@ -440,7 +455,7 @@ const TypingBox: React.FC<TypingBoxProps> = ({ mode, durationSec = 15, onStatsUp
 
   /* init & prop change */
   useEffect(() => {
-    if (prompt && prompt.length > 0) {
+    if (promptText(prompt).length > 0) {
       resetFromPrompt(prompt);
     }
   }, [prompt, resetFromPrompt]);

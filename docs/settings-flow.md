@@ -109,3 +109,11 @@ application defaults
 That repair must be driven by the Phase 1 audit. The documentation and harness branches must not silently synchronize stores or change rendered behavior.
 
 Server-side preference persistence is a later design decision. If implemented, it must account for the current split data model: Postgres owns accounts, while Firestore owns game data. The storage choice must be explicit rather than assumed from the word “user.”
+
+## Phase 2 ownership
+
+The repaired initialization precedence is explicit restart/chip override, valid last-used configuration, persisted settings defaults, then application defaults. The selected configuration is copied into an immutable current-test snapshot.
+
+The settings drawer remains the source of defaults for future tests. Filter chips construct a new current-test configuration and do not write global defaults. After initialization, persisted setting changes do not mutate the active prompt. Last-test persistence stores the canonical configuration and migrates the legacy count/duration and snake-case flag shape.
+
+Results use the content-derived effective configuration from the finalized prompt. Resolved adaptive difficulty is separate metadata and does not override rendered punctuation or number flags.

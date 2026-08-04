@@ -86,6 +86,32 @@ describe("shared generated-prompt finalization", () => {
     assert.equal(result.text.split(/\s+/).every((token) => /^[a-z]{1,8}$/.test(token)), true);
   });
 
+  it("honors repeat limits across an existing timed stream and append", () => {
+    const timedConfig: TestGenerationConfig = {
+      ...config(false, false),
+      mode: "time",
+      wordCount: undefined,
+      durationSeconds: 30,
+      maxRepeatPerWord: 2,
+    };
+    const priorTokens = ["alpha", "alpha"];
+    const result = finalizeGeneratedPrompt({
+      rawText: Array(15).fill("alpha").join(" "),
+      config: timedConfig,
+      expectedTokenCount: 15,
+      wordPool: EN_CORE_5K,
+      priorTokens,
+    });
+    const combined = priorTokens.concat(result.text.split(/\s+/));
+    const counts = new Map<string, number>();
+    for (const token of combined) {
+      counts.set(token, (counts.get(token) ?? 0) + 1);
+    }
+
+    assert.equal(result.text.split(/\s+/).length, 15);
+    assert.equal(Math.max(...counts.values()), 2);
+  });
+
   it("fails clearly for empty input", () => {
     assert.throws(
       () => finalizeGeneratedPrompt({

@@ -130,4 +130,12 @@ The first implementation branch must:
 - reserve nonzero exit status for explicit strict mode;
 - avoid changing `TypingTest`, `easyFilter`, settings behavior, databases, auth, or PartyKit.
 
-The subsequent `fix/adaptive-config-pipeline` branch—not the harness branch—owns the production repair.
+The subsequent adaptive configuration branches—not the harness branch—own the production repair.
+
+## Phase 2 repaired boundary
+
+Phase 1 recorded 52 violations: 16 downstream stage errors, 12 effective-flag mismatches, 8 punctuation losses, 8 number losses, and 8 token-count losses.
+
+Normal solo word/time generation now captures one immutable `TestGenerationConfig`. Server text and local fallbacks both pass through `finalizeGeneratedPrompt`, which performs exact-count repair, configuration-aware easy filtering, deterministic number and punctuation inclusion, final sanitization, and contract validation. Timed append derives child seeds and reuses the same active configuration.
+
+`TypingBox` accepts a discriminated `finalized-solo` prompt object. Only that explicit variant bypasses the legacy repeat-limiter pass; party and legacy string prompts keep their prior behavior. The strict four-configuration audit invokes this same finalizer and now reports zero violations.

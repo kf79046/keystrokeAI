@@ -16,6 +16,7 @@ export type EasyFilterOptions = {
   random?: () => number;
   allowPunctuation?: boolean;
   allowNumbers?: boolean;
+  initialTokens?: string[];
 };
 
 // Replace any token that isn't "easy" with an easy fallback from `pool`.
@@ -35,9 +36,18 @@ export function normalizeToEasyTokens(
   if (safePool.length === 0) {
     throw new Error("Easy filter requires at least one lowercase letters-only replacement");
   }
+  const initialTokens = (opts?.initialTokens ?? [])
+    .map((token) => sanitizePrompt(String(token).toLowerCase(), {
+      allowPunctuation,
+      allowNumbers,
+    }))
+    .filter(Boolean);
   const out: string[] = [];
   const counts = new Map<string, number>();
-  const lru = new StringLRU(2048, []);
+  for (const token of initialTokens) {
+    counts.set(token, (counts.get(token) ?? 0) + 1);
+  }
+  const lru = new StringLRU(2048, initialTokens);
 
   const pick = (): string => {
     for (let i = 0; i < 8; i++) {
@@ -48,7 +58,7 @@ export function normalizeToEasyTokens(
     return safePool[(random() * safePool.length) | 0];
   };
 
-  let prev = '';
+  let prev = initialTokens.at(-1) ?? '';
   for (const tok of tokens) {
     let t = String(tok).toLowerCase();
     t = sanitizePrompt(t, { allowPunctuation, allowNumbers });
@@ -56,7 +66,7 @@ export function normalizeToEasyTokens(
     const hasAllowedNumber = allowNumbers && /[0-9]/.test(t);
     const hasEasyLexicalCore = isEasyWord(lexical, maxLen);
     if (!hasAllowedNumber && !hasEasyLexicalCore) t = pick();
-    if (t === prev) t = pick();
+    if (t === prev || (counts.get(t) ?? 0) >= maxRepeat) t = pick();
     out.push(t);
     counts.set(t, (counts.get(t) ?? 0) + 1);
     lru.push(t);

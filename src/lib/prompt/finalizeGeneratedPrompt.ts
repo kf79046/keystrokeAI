@@ -28,6 +28,7 @@ export type FinalizePromptInput = {
   expectedTokenCount: number;
   seed?: number;
   wordPool: string[];
+  priorTokens?: string[];
 };
 
 export type FinalizePromptResult = {
@@ -156,6 +157,7 @@ export function finalizeGeneratedPrompt(
     random,
     allowPunctuation: config.includePunctuation,
     allowNumbers: config.includeNumbers,
+    initialTokens: input.priorTokens,
   });
   stage(stages, "easy-filtered", text);
 

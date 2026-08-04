@@ -109,7 +109,7 @@ export default function SettingsPanel() {
                 </div>
                 <div>
                   <div className="text-white/70 mb-1">Default length</div>
-                  {[10,15,20,30,50].map(n => (
+                  {([10,15,20,30,50] as const).map(n => (
                     <label key={n} className="inline-flex items-center gap-2 mr-2 mb-1">
                       <input type="radio" name="testLen" checked={s.test.defaultLength===n} onChange={()=>s.update('test',{ defaultLength: n })} />
                       <span>{n}</span>
