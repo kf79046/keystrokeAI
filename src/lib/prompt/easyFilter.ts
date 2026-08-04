@@ -10,15 +10,22 @@ export function isEasyWord(w: string, maxLen = 8) {
   return s.length > 0 && s.length <= maxLen && isLettersOnly(s);
 }
 
+export type EasyFilterOptions = {
+  maxLen?: number;
+  maxRepeat?: number;
+  random?: () => number;
+};
+
 // Replace any token that isn't "easy" with an easy fallback from `pool`.
 // Also removes immediate duplicates, preserving length.
 export function normalizeToEasyTokens(
   tokens: string[],
   pool: string[],
-  opts?: { maxLen?: number; maxRepeat?: number }
+  opts?: EasyFilterOptions
 ) {
   const maxLen = Math.max(1, opts?.maxLen ?? 8);
   const maxRepeat = Math.max(1, opts?.maxRepeat ?? 2);
+  const random = opts?.random ?? Math.random;
   const easy = pool.filter(w => isEasyWord(w, maxLen));
   const safePool = easy.length > 0 ? easy : tokens.filter(t => isEasyWord(t, maxLen));
   const out: string[] = [];
@@ -27,11 +34,11 @@ export function normalizeToEasyTokens(
 
   const pick = (): string => {
     for (let i = 0; i < 8; i++) {
-      const cand = safePool[(Math.random() * safePool.length) | 0];
+      const cand = safePool[(random() * safePool.length) | 0];
       const c = counts.get(cand) ?? 0;
       if (c < maxRepeat && !lru.has(cand)) return cand;
     }
-    return safePool[(Math.random() * safePool.length) | 0];
+    return safePool[(random() * safePool.length) | 0];
   };
 
   let prev = '';
@@ -48,7 +55,7 @@ export function normalizeToEasyTokens(
   return out;
 }
 
-export function applyEasyFilter(text: string, pool: string[], opts?: { maxLen?: number; maxRepeat?: number }) {
+export function applyEasyFilter(text: string, pool: string[], opts?: EasyFilterOptions) {
   const tokens = String(text).split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return text;
   const fixed = normalizeToEasyTokens(tokens, pool, opts);

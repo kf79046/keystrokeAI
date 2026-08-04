@@ -55,7 +55,7 @@ flowchart TD
   Settings --> Repeat["ensureExactNoRepeat / TypingBox repeat logic"]
   Settings --> Sanitize["final sanitizePrompt"]
   Request --> Raw["generated raw text"]
-  Raw --> Easy["easyFilter strips punctuation/numbers"]
+  Raw --> Easy["easyFilter attempt currently throws"]
   Easy --> Sanitize
   Sanitize --> Render["rendered prompt"]
 ```
@@ -70,7 +70,7 @@ There is no single validated effective configuration object.
 4. `bk:settings:v1` remains independently editable in the settings drawer.
 5. Prompt generation uses the component-local values.
 6. Exact-count repeat replacement, the final sanitizer, adaptive append, TypingBox repeat limiting, and AI Coach drill sanitization consult persisted settings.
-7. `applyEasyFilter` removes punctuation/numbers regardless of either state source.
+7. `applyEasyFilter` is intended to remove/replace non-easy tokens regardless of either state source, but currently throws on nonexistent `StringLRU.add`; `TypingTest` catches the error and continues with the pre-filter text.
 
 Consequences:
 

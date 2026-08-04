@@ -44,7 +44,7 @@ flowchart LR
 
 `TypingTest` sends mode, count or duration, component-local punctuation/number flags, `difficulty: "auto"`, and moving-average WPM/accuracy. `src/server/generatePrompt.ts` resolves difficulty, selects words from `EN_CORE_5K`, optionally injects numbers and sentence punctuation, and returns the generated seed and effective flags.
 
-The returned text is not rendered directly. `TypingTest` applies exact-count normalization, lowercasing, the letters-only easy-word filter, and a final sanitizer before passing the text to `TypingBox`. See `adaptive-test-flow.md` for the verified consequences.
+The returned text is not rendered directly. `TypingTest` applies exact-count normalization and lowercasing, attempts the letters-only easy-word filter, and applies a final sanitizer before passing the text to `TypingBox`. The easy filter currently throws on nonexistent `StringLRU.add`; its surrounding catch retains the prior text. See `adaptive-test-flow.md` for the verified consequences.
 
 Fallbacks are local:
 
