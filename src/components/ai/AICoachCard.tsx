@@ -39,7 +39,7 @@ export function AICoachCard({
 
   return (
     <TooltipProvider>
-    <Card className="bk-fire-card relative isolate rounded-2xl p-5 pb-5 min-h-[225px] flex flex-col">
+    <Card className="bk-fire-card relative isolate rounded-2xl p-5 pb-5 min-h-[225px] h-full flex flex-col">
       <CardHeader className="p-0 pb-2 flex flex-row items-start justify-between">
         {/* Left: Brand + Title */}
         <div className="flex items-center gap-2 text-left">

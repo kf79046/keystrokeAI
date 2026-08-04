@@ -158,7 +158,7 @@ function ResultsChart({
       animation: false,
       normalized: true,
       resizeDelay: 90,
-      layout: { padding: { left: 8, right: 12, top: 8, bottom: 18 } },
+      layout: { padding: { left: 34, right: 12, top: 8, bottom: 36 } },
       interaction: { mode: "nearest", intersect: false, axis: "x" },
       plugins: {
         legend: { display: false },
@@ -169,6 +169,18 @@ function ResultsChart({
           cornerRadius: 10,
           displayColors: false,
           padding: 10,
+          titleColor: "rgba(255, 255, 255, 0.62)",
+          bodyColor: "#fed7aa",
+          titleFont: {
+            family: "Inter, ui-sans-serif, system-ui, sans-serif",
+            size: 11,
+            weight: 500,
+          },
+          bodyFont: {
+            family: "Inter, ui-sans-serif, system-ui, sans-serif",
+            size: 13,
+            weight: 650,
+          },
           callbacks: {
             title: (items) => `${items[0]?.label ?? 0}s elapsed`,
             label: (item) => `${Math.round(Number(item.raw))} WPM`,
@@ -190,14 +202,13 @@ function ResultsChart({
             color: "rgba(255, 255, 255, 0.66)",
             padding: 8,
             maxTicksLimit: 12,
+            font: {
+              family: "Inter, ui-sans-serif, system-ui, sans-serif",
+              size: 11,
+              weight: 500,
+            },
           },
-          title: {
-            display: true,
-            text: "Time (s)",
-            color: "rgba(253, 186, 116, 0.88)",
-            font: { weight: 600, size: 14 },
-            padding: { top: 10 },
-          },
+          title: { display: false },
         },
         y: {
           min: yRange.min,
@@ -212,14 +223,13 @@ function ResultsChart({
             color: "rgba(255, 255, 255, 0.66)",
             padding: 8,
             stepSize: niceStep(yRange.min, yRange.max),
+            font: {
+              family: "Inter, ui-sans-serif, system-ui, sans-serif",
+              size: 11,
+              weight: 500,
+            },
           },
-          title: {
-            display: true,
-            text: "WPM",
-            color: "rgba(253, 186, 116, 0.88)",
-            font: { weight: 600, size: 14 },
-            padding: { bottom: 10 },
-          },
+          title: { display: false },
         },
       },
     }),
@@ -241,6 +251,16 @@ function ResultsChart({
         aria-hidden
         className="pointer-events-none absolute inset-0 bk-chart-halo opacity-70"
       />
+      <div aria-hidden className="bk-chart-axis-label bk-chart-axis-label--y">
+        <span className="bk-chart-axis-label__dot" />
+        <span>Speed</span>
+        <strong>WPM</strong>
+      </div>
+      <div aria-hidden className="bk-chart-axis-label bk-chart-axis-label--x">
+        <span className="bk-chart-axis-label__dot" />
+        <span>Elapsed</span>
+        <strong>Seconds</strong>
+      </div>
       <Line data={data} options={options} plugins={[frameGlow]} />
     </div>
   );

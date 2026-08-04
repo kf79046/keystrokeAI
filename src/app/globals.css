@@ -1070,6 +1070,110 @@ html[data-focus="1"] .bk-flame-bg::after  { animation: none !important; opacity:
 /* Chart title area spacing (if needed) */
 .bk-chart-title { display:flex; align-items:center; gap:.6ch }
 
+/* Results trend: a focused ember-glass surface that stays quieter than CTAs. */
+.bk-trend-card {
+  border-color: rgba(251, 146, 60, 0.18);
+  background:
+    radial-gradient(80% 90% at 100% 0%, rgba(251, 146, 60, 0.07), transparent 58%),
+    radial-gradient(70% 80% at 0% 100%, rgba(194, 65, 12, 0.09), transparent 62%),
+    linear-gradient(155deg, rgba(24, 19, 17, 0.97), rgba(9, 9, 11, 0.96) 48%, rgba(15, 12, 11, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    inset 0 0 0 1px rgba(251, 146, 60, 0.035),
+    0 32px 72px -38px rgba(0, 0, 0, 0.95),
+    0 18px 48px -42px rgba(249, 115, 22, 0.8);
+  transition: border-color 220ms ease, box-shadow 220ms ease;
+}
+.bk-trend-card::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset: 0 12% auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(253, 186, 116, 0.58), transparent);
+  box-shadow: 0 0 18px rgba(249, 115, 22, 0.24);
+  pointer-events: none;
+}
+.bk-trend-card::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  width: 18rem;
+  height: 18rem;
+  right: -9rem;
+  top: -11rem;
+  border-radius: 999px;
+  background: rgba(249, 115, 22, 0.09);
+  filter: blur(60px);
+  pointer-events: none;
+}
+.bk-trend-card-vignette {
+  opacity: 0.78;
+  background:
+    linear-gradient(110deg, rgba(255, 255, 255, 0.018), transparent 32%),
+    radial-gradient(80% 58% at 50% 110%, rgba(255, 120, 20, 0.11), transparent 72%);
+}
+.bk-trend-plot-shell {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 26%),
+    rgba(0, 0, 0, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    inset 0 -36px 72px -64px rgba(249, 115, 22, 0.34);
+}
+.bk-chart-axis-label {
+  position: absolute;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  color: rgba(255, 255, 255, 0.52);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.bk-chart-axis-label strong {
+  color: rgba(254, 215, 170, 0.9);
+  font: inherit;
+  letter-spacing: 0.13em;
+}
+.bk-chart-axis-label__dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: #fb923c;
+  box-shadow: 0 0 8px rgba(249, 115, 22, 0.75);
+}
+.bk-chart-axis-label--x {
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+}
+.bk-chart-axis-label--y {
+  left: 8px;
+  top: 50%;
+  transform: translate(-34%, -50%) rotate(-90deg);
+}
+@media (hover: hover) {
+  .bk-trend-card:hover {
+    border-color: rgba(251, 146, 60, 0.25);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.065),
+      inset 0 0 0 1px rgba(251, 146, 60, 0.05),
+      0 34px 78px -38px rgba(0, 0, 0, 0.98),
+      0 20px 54px -40px rgba(249, 115, 22, 0.9);
+  }
+}
+
 /* Prevent accidental horizontal scrolling when global zoom is active */
 html, body { overflow-x: hidden }
 /* === Appearance tokens (defaults) === */
@@ -1374,6 +1478,13 @@ html[data-chartGlow="ember"] .recharts-line { filter: drop-shadow(0 0 6px color-
 .results-scroll-root {
   scroll-behavior: smooth;
   overscroll-behavior: contain;
+}
+
+/* Keep a collapsed results ad from creating an extra grid gap between cards. */
+.bk-results-ad-row:has(> .bk-ad-container[aria-hidden="true"]) {
+  position: absolute;
+  inset-inline: 0;
+  pointer-events: none;
 }
 
 /* --- Preserve layout when removing the dark 'Next challenge' row --- */

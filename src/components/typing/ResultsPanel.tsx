@@ -281,16 +281,20 @@ export default function ResultsPanel(props: ResultsPanelProps) {
         )}
 
         {/* Ad: Results (below top summary) */}
-        {nonCriticalReady && <div className="col-span-12">
-          <AdSlot
-            slot={process.env.NEXT_PUBLIC_ADSENSE_SLOT_RESULTS}
-            pageKey="results"
-          />
-        </div>}
+        {nonCriticalReady &&
+          process.env.NEXT_PUBLIC_ADSENSE_SLOT_RESULTS &&
+          process.env.NEXT_PUBLIC_ADSENSE_CLIENT_ID && (
+          <div className="bk-results-ad-row col-span-12">
+            <AdSlot
+              slot={process.env.NEXT_PUBLIC_ADSENSE_SLOT_RESULTS}
+              pageKey="results"
+            />
+          </div>
+        )}
 
         {/* Middle row: Insights left, Coach right */}
         <div className="col-span-12 lg:col-span-6">
-          <div>
+          <div className="h-full">
             <AIFeedbackCardRevamp
               wpmTrend={wpmTrend}
               accuracyPct={accuracy}
@@ -305,7 +309,7 @@ export default function ResultsPanel(props: ResultsPanelProps) {
 
         <div className="col-span-12 lg:col-span-6">
           {(onPracticeWeakSpots || onPracticeWeakSpotsTimed) && (
-            <div>
+            <div className="h-full">
               <AICoachCard
                 onPractice={onPracticeWeakSpots ?? (() => {})}
                 onPracticeTimed={onPracticeWeakSpotsTimed}
@@ -316,11 +320,14 @@ export default function ResultsPanel(props: ResultsPanelProps) {
 
         {/* Bottom: Trend full-width */}
         <div className="col-span-12">
-          <Card className="bk-fire-card relative isolate rounded-2xl h-full min-h-[432px]">
-            <div aria-hidden className="bk-card-vignette pointer-events-none absolute inset-0" />
-            <CardHeader className="pb-2 relative z-10">
+          <Card className="bk-fire-card bk-trend-card relative isolate overflow-hidden rounded-2xl h-full min-h-[432px]">
+            <div aria-hidden className="bk-card-vignette bk-trend-card-vignette pointer-events-none absolute inset-0" />
+            <CardHeader className="px-5 pt-5 pb-2 md:px-6 relative z-10">
               <div className="bk-chart-title mb-2 flex flex-wrap items-center justify-between gap-3">
-                <CardTitle className="text-base md:text-lg font-semibold bk-title bk-title--glow">Typing Speed Trend</CardTitle>
+                <div>
+                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-orange-300/55">Performance</div>
+                  <CardTitle className="text-base md:text-lg font-semibold bk-title bk-title--glow">Typing Speed Trend</CardTitle>
+                </div>
                 <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] text-white/55">
                   {chartAvgWpm != null && (
                     <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1">
@@ -335,9 +342,9 @@ export default function ResultsPanel(props: ResultsPanelProps) {
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="pt-2 relative z-10">
+            <CardContent className="px-4 pt-2 pb-4 md:px-5 md:pb-5 relative z-10">
               <motion.div
-                className="h-[312px] md:h-[360px] pl-6 pr-2"
+                className="bk-trend-plot-shell h-[312px] md:h-[360px] p-1.5 md:p-2"
                 {...trendReveal}
                 data-testid="results-trend"
               >
