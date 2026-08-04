@@ -11,6 +11,7 @@ export type GenerateIn = {
   recent_wpm?: number | null;
   recent_accuracy?: number | null;
   blaze?: boolean | null;
+  seed?: number | null;
 };
 
 export type GenerateOut = {
@@ -65,6 +66,16 @@ function rng(seed: number) {
     r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
     return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+function resolveSeed(seed: number | null | undefined): number {
+  if (seed == null) {
+    return Math.floor(Math.random() * 2_000_000_000) + 1;
+  }
+  if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new Error("seed must be an integer between 0 and 4294967295");
+  }
+  return seed >>> 0;
 }
 
 function partitionBanks(words: string[]) {
@@ -162,7 +173,7 @@ export async function generatePrompt(input: GenerateIn): Promise<GenerateOut> {
   const cap8 = (arr: string[]) => arr.filter(w => /^[a-z]{1,8}$/i.test(String(w)));
   const banks = isBlaze ? [easy, medium, hard] : [cap8(easy), cap8(medium), cap8(hard)];
 
-  const seed = Math.floor(Math.random() * 2_000_000_000) + 1;
+  const seed = resolveSeed(input.seed);
   const rand = rng(seed);
 
   // Slightly nudge difficulty mix for Blaze

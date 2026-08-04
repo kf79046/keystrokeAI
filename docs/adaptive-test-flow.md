@@ -15,7 +15,7 @@ flowchart TD
   Seed --> Raw["raw generated text"]
   Raw --> Count["ensureExactNoRepeat"]
   Count --> Lower["toLowerLettersOnly + normalizePromptWords"]
-  Lower --> Easy["applyEasyFilter"]
+  Lower --> Easy["applyEasyFilter attempt (currently throws)"]
   Easy --> Final["sanitizePrompt using persisted settings"]
   Final --> Render["TypingBox"]
 ```
@@ -55,15 +55,17 @@ The generated text is transformed again in `TypingTest`:
 1. `ensureExactNoRepeat` normalizes the requested word count and consults persisted settings for repeat replacement.
 2. `toLowerLettersOnly` lowercases letters while retaining non-letters.
 3. `normalizePromptWords` normalizes whitespace/tokens.
-4. `applyEasyFilter` replaces every token that is not a lowercase letters-only word of at most eight characters.
+4. `applyEasyFilter` is intended to replace every token that is not a lowercase letters-only word of at most eight characters. It currently throws because it calls nonexistent `StringLRU.add`; the surrounding `TypingTest` catch keeps the pre-filter text.
 5. `sanitizePrompt` uses `useSettingsStore.getState().test`, not the component-local flags used in the request.
 6. The resulting string becomes `currentPrompt` and is rendered by `TypingBox`.
 
-`applyEasyFilter` is the verified flag-loss point. It sanitizes each token with punctuation and numbers disabled before validating/replacing it. Therefore punctuation and numeric tokens produced by the server generator do not survive the default non-coder post-processing path.
+If executable, `applyEasyFilter` would be a flag-loss point because it sanitizes each token with punctuation and numbers disabled. In the current runtime it fails on the first token and is silently skipped. The Phase 1 audit records both the stage error and the text that proceeds to final sanitization; it must not repair this production defect.
 
 There is a second configuration mismatch: the request uses `showPunctuation`/`showNumbers`, while the final sanitizer and repeat limiter use persisted `bk:settings:v1` values. The UI can display one requested state while downstream processing uses another.
 
-The asynchronous `getEasyPool()` enrichment mutates only the closed-over local `finalPrompt` after rendering has already been scheduled. It does not update `currentPrompt` and therefore has no verified UI effect.
+With default persisted flags off, sanitization removes server-injected numeric tokens completely, which can also reduce the rendered word count below the requested count.
+
+The asynchronous `getEasyPool()` enrichment is not reached when the synchronous filter throws. Even after that defect is repaired, its callback only mutates a closed-over local `finalPrompt` after rendering has been scheduled, so it still has no verified UI effect.
 
 ## Other generation paths
 
