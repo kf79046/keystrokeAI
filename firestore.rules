@@ -54,6 +54,13 @@ service cloud.firestore {
       allow write: if false; // writes via Admin only
     }
 
+    // Versioned per-user application preferences. The document id is the
+    // normalized BlazeKey app-session username, not a Firebase uid, so all
+    // access is mediated by /api/settings through the Admin SDK.
+    match /user_settings_v1/{usernameLower} {
+      allow read, write: if false;
+    }
+
     // 1v1 party audit rows. The PartyKit room is the source of truth for
     // live gameplay; this collection only stores creation + finish audit.
     // All client reads/writes are denied — the Next.js API routes

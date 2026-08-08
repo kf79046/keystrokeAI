@@ -69,6 +69,10 @@ import {
   type TestGenerationConfig,
   type TestGenerationConfigInput,
 } from "@/lib/prompt/testGenerationConfig";
+import {
+  isSettingsHydrationSettled,
+  useSettingsSyncStore,
+} from "@/hooks/useSettingsSync";
 
 // --- NEW: simple local history for adaptive difficulty ---
 const HISTORY_KEY = "ks_history_v1";
@@ -157,6 +161,8 @@ const TypingTest: React.FC = () => {
   
   // Gate to ensure we apply last-used config before first prompt loads
   const [bootConfigured, setBootConfigured] = useState(false);
+  const settingsSyncStatus = useSettingsSyncStore((state) => state.status);
+  const settingsHydrationSettled = isSettingsHydrationSettled(settingsSyncStatus);
 
   // Reentrancy/coordination for new-test triggers
   const newReqTokenRef = useRef(0);
@@ -313,6 +319,7 @@ const TypingTest: React.FC = () => {
   // Apply last-used config before first load
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (bootConfigured || !settingsHydrationSettled) return;
     const settings = useSettingsStore.getState().test;
     const persistedDefaults: TestGenerationConfigInput = {
       mode:
@@ -350,7 +357,7 @@ const TypingTest: React.FC = () => {
     setShowNumbers(resolved.includeNumbers);
     setShowPunctuation(resolved.includePunctuation);
     setBootConfigured(true);
-  }, [DEFAULT_WORDS]);
+  }, [DEFAULT_WORDS, bootConfigured, settingsHydrationSettled]);
 
   type GeneratePayload = {
     mode: 'words' | 'time';

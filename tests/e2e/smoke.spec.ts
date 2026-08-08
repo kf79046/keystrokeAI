@@ -11,7 +11,7 @@ test.beforeEach(async ({ page }) => {
       return route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ user: null }),
+        body: "null",
       });
     }
 

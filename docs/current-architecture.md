@@ -20,7 +20,7 @@ Next.js route handlers under `src/app/api/` form the server-side boundary used b
 
 - `auth/*` proxies register, login, logout, and session checks to FastAPI.
 - `generate-proxy` runs the active TypeScript prompt generator in-process.
-- `runs`, `stats/*`, `totals/me`, `leaderboard*`, `streak/ping`, `profile/sync`, and `users/*` read or write Firestore through `src/lib/firebaseAdmin.ts`.
+- `runs`, `settings`, `stats/*`, `totals/me`, `leaderboard*`, `streak/ping`, `profile/sync`, and `users/*` read or write Firestore through `src/lib/firebaseAdmin.ts`.
 - `party/create`, `party/join`, and `party/rematch` coordinate Firestore records with PartyKit rooms.
 - `generate-text` is a separate OpenAI/fallback experiment and is not the active solo typing path.
 
@@ -68,6 +68,12 @@ Browser auth calls Next.js `src/app/api/auth/*`. Those routes proxy to `${NEXT_P
 `backend/database.py` requires `DATABASE_URL` in production and permits a clearly marked SQLite fallback only for local development. Alembic owns production schema creation; the current migration set contains `backend/alembic/versions/0001_initial_users_table.py`.
 
 The authenticated username is then used by Next.js Firestore routes as the application identity for game data. Some routes retain compatibility with Firebase ID tokens or guest IDs, but Firebase Auth is not the primary username/password account store.
+
+Authenticated application preferences use the same identity bridge. `GET` and `PUT`
+on `/api/settings` resolve the signed app-session username on the server, normalize it
+to `usernameLower`, and access exactly `user_settings_v1/{usernameLower}` through the
+Admin SDK. The browser cannot select a username or Firestore path. Firestore rules deny
+all direct client reads and writes to this collection.
 
 The Postgres `users` model still contains `xp_total` and `streak`, but the active run/streak flow updates Firestore totals and user projections instead. Those SQL columns must not be treated as the current game-stat source of truth.
 
@@ -127,3 +133,35 @@ The normal solo path now resolves one canonical test configuration before genera
 `TypingTest` owns the active finalized snapshot across rendering, timed append, results, and last-test persistence. Prefetch stores a complete prepared snapshot and does not replace active-run metadata until activation. `TypingBox` skips its legacy repeat mutation only for the explicit `finalized-solo` prompt variant, preserving party and legacy behavior.
 
 The adaptive audit consumes this production finalizer directly. Its Phase 1 baseline was 52 violations; the repaired strict matrix is zero.
+
+## Settings persistence boundary (Phase 3)
+
+`src/lib/settings/preferencesSchema.ts` owns storage schema version 1, all runtime
+normalization, and the one application-default object. Its test-content defaults still
+derive from `APPLICATION_TEST_CONFIG`, preserving Phase 2 ownership. The schema contains
+only the existing `commands`, `test`, `ai`, `fx`, `focus`, `appearance`, and `privacy`
+groups; unknown fields are discarded and missing or malformed fields receive their
+field-level application defaults.
+
+`src/store/settings.ts` remains the immediate client owner and local cache under
+`bk:settings:v1`. Its Zustand persist envelope is version 2, migrated additively through
+the canonical schema. Guests and sessions with server sync disabled remain local-only.
+
+`src/hooks/useSettingsSync.ts` coordinates local hydration, auth resolution, remote
+loading, one-time adoption, and debounced optimistic writes. Its observable state is
+`awaiting-auth`, `waiting-local`, `loading-remote`, `ready`, `local-only`, `syncing`, or
+`unsynced`. A failed write keeps the optimistic local value and records a same-user
+pending write at `bk:settings:pending:v1`; it does not repeatedly retry in a loop. The
+next local change or auth refresh retries. The server request has a bounded timeout, so
+settings service or Firestore failure cannot prevent typing.
+
+The boot order is local Zustand hydration, app-session resolution, remote read or safe
+adoption, normalized store application (or bounded local fallback), last-test/session
+precedence resolution, and finally creation of the immutable active-test snapshot.
+Remote hydration after a test has initialized can update future defaults but cannot
+alter that test's prompt or effective configuration.
+
+`SETTINGS_SERVER_SYNC` is a server-only kill switch and defaults on. Setting it to
+`0`, `false`, `off`, `disabled`, or `no` makes the read response declare local-only mode
+and rejects writes without touching Firestore. No document deletion or schema rollback
+is required.

@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     const url = route.request().url();
     if (url.includes("/api/auth/me")) {
-      return route.fulfill({ json: { user: null } });
+      return route.fulfill({ status: 200, body: "null", contentType: "application/json" });
     }
     if (url.includes("/api/generate-proxy")) {
       return route.fulfill({

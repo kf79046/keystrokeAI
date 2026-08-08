@@ -117,3 +117,91 @@ The repaired initialization precedence is explicit restart/chip override, valid 
 The settings drawer remains the source of defaults for future tests. Filter chips construct a new current-test configuration and do not write global defaults. After initialization, persisted setting changes do not mutate the active prompt. Last-test persistence stores the canonical configuration and migrates the legacy count/duration and snake-case flag shape.
 
 Results use the content-derived effective configuration from the finalized prompt. Resolved adaptive difficulty is separate metadata and does not override rendered punctuation or number flags.
+
+## Phase 3 persistence implementation
+
+Phase 3 keeps the existing settings UI and adds a versioned persistence boundary below
+it.
+
+### Ownership and schema
+
+- `src/lib/settings/preferencesSchema.ts` owns preference schema version 1, runtime
+  normalization, deterministic serialization, migration, and the application defaults.
+- Test defaults in that object derive from Phase 2's `APPLICATION_TEST_CONFIG`; literals
+  for punctuation, numbers, word count, word set, and repeat limit are not duplicated.
+- The persistable groups are the existing `commands`, `test`, `ai`, `fx`, `focus`,
+  `appearance`, and `privacy` data. Zustand actions, sync status, metadata, and proposed
+  future settings are not persisted as preferences.
+- Invalid values fall back field-by-field. Missing groups are filled, unknown fields are
+  dropped, malformed nested objects cannot throw, and unknown schema versions normalize
+  safely to the current version.
+
+### Local and remote persistence
+
+- `bk:settings:v1` remains the immediate Zustand/localStorage cache for every user. Its
+  Zustand envelope is version 2 and migration is additive; the storage key is unchanged.
+- Guests never call `/api/settings` and remain fully local-only.
+- Authenticated preferences live in Firestore at
+  `user_settings_v1/{usernameLower}`. `usernameLower` comes only from
+  `getCurrentAppUsername` plus `usernameLowerOf` on the server.
+- `GET /api/settings` returns normalized preferences, `null` for a missing document or
+  guest, and `syncEnabled: false` when the kill switch is off. It never creates a
+  document.
+- `PUT /api/settings` requires the app session, normalizes the supplied preference
+  object, and writes only the resolved user's document. The request cannot choose an
+  identity or document path.
+- Firestore rules deny all direct client access to `user_settings_v1`; the Admin SDK
+  route is the only read/write path. A single document lookup requires no new index.
+
+### First-login adoption
+
+After local hydration and authentication, a missing remote document triggers an
+`adoption: true` PUT with the normalized local preferences. The route performs the
+existence check and create in one Firestore transaction. If another request created the
+document first, the established remote record is returned and applied; it is never
+overwritten by the adoption attempt. Document existence is the durable one-time marker,
+and a successful seed also records `adoptedFromLocalAt`. Malformed local data is
+normalized before adoption. A failed adoption leaves local settings intact and retries
+safely on a later change or auth refresh.
+
+### Precedence and hydration
+
+For a new solo test, precedence remains:
+
+```text
+application defaults
+  -> normalized local cache or authenticated remote preferences
+  -> valid last-used configuration
+  -> explicit current-session/restart override
+  -> immutable active-test configuration
+```
+
+Initialization runs in this order:
+
+```text
+Zustand local hydration
+  -> authentication resolution
+  -> remote read / transactional adoption / local-only fallback
+  -> normalized settings store
+  -> Phase 2 initial-config resolver
+  -> active finalized prompt snapshot
+```
+
+The settings-sync request is time-bounded. API, authentication, Firestore, or malformed
+remote failures settle to usable local settings rather than blocking typing. Once
+`TypingTest` has resolved its initial configuration, later preference hydration or writes
+do not rerun that initialization and cannot mutate the current finalized prompt.
+
+### Optimistic writes, failure, and rollback
+
+Store changes update local state immediately and debounce authenticated PUTs by 650 ms.
+Successful responses become the new local/remote baseline; applying a response is
+suppressed from the write subscription to prevent hydration loops. A failed PUT keeps
+the local optimistic value, exposes `unsynced` state plus a
+`bk:settings-sync-error` browser event, and records a username-scoped pending write at
+`bk:settings:pending:v1`. There is no automatic infinite retry loop.
+
+`SETTINGS_SERVER_SYNC` defaults on. Set it to `0`, `false`, `off`, `disabled`, or `no`
+to make the client retain local-only behavior without deleting Firestore documents or
+changing the schema. Reverting the branch also leaves the existing local storage key
+readable because migration is additive.

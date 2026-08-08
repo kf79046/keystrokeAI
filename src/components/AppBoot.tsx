@@ -1,13 +1,15 @@
 "use client";
-import React, { useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useAuthStore } from "@/store/auth";
 import { useAppearance } from "@/hooks/useAppearance";
 import { useStatsStore } from "@/stores/useStatsStore";
 import { bootSync } from "@/lib/sync";
+import { useSettingsSync } from "@/hooks/useSettingsSync";
 
 export default function AppBoot() {
   const ran = useRef(false);
   useAppearance();
+  useSettingsSync();
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
