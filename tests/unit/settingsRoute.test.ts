@@ -206,6 +206,36 @@ describe("settings API route", () => {
     assert.equal(stored.updatedAt, "server-time");
   });
 
+  it("flags an unsupported future-version remote record without downgrading it", async () => {
+    const database = fakeFirestore({
+      initial: {
+        schemaVersion: 2,
+        test: { include_numbers: true },
+      },
+    });
+    const { routes } = handlers({ username: "Alice", db: database });
+    const response = await routes.GET(request("GET"));
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.unsupportedSchema, true);
+    assert.equal(body.remoteSchemaVersion, 2);
+    // App stays usable via a normalized local view; the read never writes back.
+    assert.equal(body.preferences.test.include_numbers, true);
+    assert.equal(database.inspect().writes, 0);
+  });
+
+  it("does not flag supported v1 or legacy remote records", async () => {
+    const database = fakeFirestore({
+      initial: { schemaVersion: 1, test: { include_numbers: true } },
+    });
+    const { routes } = handlers({ username: "Alice", db: database });
+    const body = await (await routes.GET(request("GET"))).json();
+
+    assert.equal("unsupportedSchema" in body, false);
+    assert.equal(body.preferences.test.include_numbers, true);
+  });
+
   it("rejects invalid bodies", async () => {
     const { routes } = handlers({ username: "alice" });
     const response = await routes.PUT(request("PUT", { preferences: "bad" }));

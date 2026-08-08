@@ -211,6 +211,23 @@ On login, if the server has **no** `user_settings_v1` document for the user, see
 from the current local preferences (adoption), then treat the server as source of truth.
 If a server document exists, it hydrates the store and overwrites the local cache.
 
+**Account isolation:** the shared local cache tracks an owner (`bk:settings:owner:v1`;
+`null` for guest, otherwise `usernameLower`). Adoption seeds from the local cache only when
+that cache is adoptable for the authenticating user — i.e. it belongs to a guest (no prior
+authenticated owner) or to the same user. If it belongs to a different authenticated user,
+the cache is reset to defaults before remote resolution and the new user's empty document
+is seeded from defaults, never from the previous user's preferences. Logout resets the
+cache to defaults, clears the owner, and clears any pending write. Pending writes remain
+identity-scoped so a failed write for one user is never applied under another.
+
+### 6.1a Unsupported future remote schema
+
+If a remote document declares a `schemaVersion` newer than this build's
+`PREFERENCES_SCHEMA_VERSION`, the GET route flags it and the client keeps the app usable on
+safe local settings while suspending all writes for the session. The newer record is never
+downgraded to v1 or overwritten, and no write-back loop occurs. v1 and legacy documents
+continue to normalize normally.
+
 ### 6.2 Existing-user migration
 
 - Existing local `bk:settings:v1` is retained as the local cache. Bump the store persist
@@ -341,7 +358,7 @@ Run with the repo conventions (`tsx --test` for unit; Playwright for e2e).
 
 | Risk | Severity | Mitigation |
 | --- | --- | --- |
-| Server hydration overwrites a just-changed local value | Medium | Debounced writes + last-write-wins on `updatedAt`; hydrate only on auth transition, not on every focus |
+| Server hydration overwrites a just-changed local value | Medium | Debounced writes + arrival-order, full-document last-write-wins; hydrate only on auth transition, not on every focus |
 | First-login adoption clobbers server prefs from a shared device | Medium | Adoption only when server doc is absent; otherwise server wins |
 | Identity mismatch (username vs Firebase uid) | Medium | Reuse `getCurrentAppUsername` exclusively; server-mediated rules deny direct client access |
 | Optimistic write fails silently | Low | Non-blocking unsynced state + retry; local stays authoritative |
@@ -371,3 +388,13 @@ commits.
 
 `feat/settings-ui-redesign` (Phase 4) — redesign the gear/settings experience on top of
 this reliable schema and persistence boundary.
+
+## 14. Follow-ups (out of scope for this phase)
+
+- **True multi-device conflict resolution.** Current behavior is arrival-order,
+  full-document last-write-wins; `updatedAt` is metadata only, not a write precondition.
+  A future phase can add per-field merge or `updatedAt`/version optimistic-concurrency
+  preconditions.
+- **Forward-migration of newer remote schemas.** Unsupported future `schemaVersion`
+  documents are currently treated as read-only (writes suspended). A future build that
+  understands the newer schema can add explicit up/down migration.

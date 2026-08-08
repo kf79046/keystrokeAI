@@ -205,3 +205,44 @@ the local optimistic value, exposes `unsynced` state plus a
 to make the client retain local-only behavior without deleting Firestore documents or
 changing the schema. Reverting the branch also leaves the existing local storage key
 readable because migration is additive.
+
+### Conflict resolution (actual behavior)
+
+Multi-device conflict handling is **arrival-order, full-document last-write-wins**. Each
+successful `PUT` replaces the user's document with the complete normalized preference
+object; whichever write reaches Firestore last wins. `updatedAt` is stored as metadata
+only — it is **not** used as a write precondition, and there is no per-field merge or
+optimistic-concurrency check. True multi-device conflict resolution (per-field merge or
+`updatedAt`/version preconditions) is a deliberate **follow-up**, not part of this phase.
+
+### Account isolation (cross-account leak prevention)
+
+The shared `bk:settings:v1` local cache records an owner in `bk:settings:owner:v1`
+(`null` for a guest, or the authenticated `usernameLower`). On an authenticated identity
+transition the cache is isolated **before** remote resolution:
+
+- If the local cache belongs to a different authenticated user, it is reset to
+  application defaults before reading the remote document, so a new user's empty remote is
+  never seeded from a previous user's cache.
+- A guest cache with no prior authenticated owner is still adoptable on first login.
+- Logout resets the cache to defaults, clears the owner, and clears any pending write,
+  leaving a deterministic safe state.
+- Pending writes stay identity-scoped (`usernameLower`), so a failed write for one user is
+  never applied under another.
+
+### Unsupported future remote schema
+
+If a remote document declares `schemaVersion` greater than this build's
+`PREFERENCES_SCHEMA_VERSION`, `GET /api/settings` flags it (`unsupportedSchema: true`).
+The client keeps the app usable on safe local settings and **suspends all writes** for the
+session, so the newer server record is never downgraded to v1 or overwritten, and no
+write-back loop occurs. Existing v1 and legacy documents continue to normalize normally.
+
+### Bounded first-test boot
+
+First-test boot waits for the settings hydration to settle, but is bounded by a total
+fallback (`BOOT_SETTINGS_FALLBACK_MS`). If auth (`/api/auth/me`) or settings resolution
+stalls past that bound, boot proceeds from safe locally-hydrated/default settings so the
+typing prompt is never blocked indefinitely. Remote preferences that arrive after the
+fallback update defaults for the next test only; the already-active Phase 2 prompt is
+never mutated.

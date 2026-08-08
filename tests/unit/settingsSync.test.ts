@@ -6,15 +6,21 @@ import {
   type PersistedPreferences,
 } from "../../src/lib/settings/preferencesSchema";
 import {
+  SETTINGS_OWNER_KEY,
   SETTINGS_PENDING_WRITE_KEY,
+  clearAllPendingSettingsWrites,
   clearPendingSettingsWrite,
+  isAdoptableLocalCache,
   parsePendingSettingsWrite,
   readPendingSettingsWrite,
+  readSettingsOwner,
   resolveInitialSettings,
   storePendingSettingsWrite,
+  writeSettingsOwner,
   type SettingsTransport,
 } from "../../src/lib/settings/settingsSync";
 import { isSettingsServerSyncEnabled } from "../../src/lib/settings/serverSyncFlag";
+import { applicationSettingsDefaults } from "../../src/lib/settings/preferencesSchema";
 
 function preferences(
   patch: Record<string, unknown> = {},
@@ -190,5 +196,154 @@ describe("settings synchronization resolution", () => {
     assert.equal(parsePendingSettingsWrite({ usernameLower: "alice" }, "alice"), null);
     clearPendingSettingsWrite(storage, "alice");
     assert.equal(storage.getItem(SETTINGS_PENDING_WRITE_KEY), null);
+  });
+});
+
+describe("settings account isolation", () => {
+  it("tracks local cache ownership and adoptability", () => {
+    const storage = memoryStorage();
+    assert.equal(readSettingsOwner(storage), null);
+    assert.equal(isAdoptableLocalCache(null, "bob"), true);
+
+    writeSettingsOwner(storage, "alice");
+    assert.equal(readSettingsOwner(storage), "alice");
+    assert.equal(storage.getItem(SETTINGS_OWNER_KEY) !== null, true);
+    assert.equal(isAdoptableLocalCache("alice", "alice"), true);
+    assert.equal(isAdoptableLocalCache("alice", "bob"), false);
+
+    writeSettingsOwner(storage, null);
+    assert.equal(readSettingsOwner(storage), null);
+  });
+
+  it("A -> logout -> new B: B does NOT adopt A's local cache", async () => {
+    // A's values still sit in the shared local cache when B (no remote doc) logs in.
+    const aliceLocal = preferences({
+      test: { include_numbers: true, include_punctuation: true },
+    });
+    let seeded: unknown = null;
+    const result = await resolveInitialSettings(aliceLocal, transport({
+      read: async () => ({ syncEnabled: true, preferences: null }),
+      write: async (value, options) => {
+        seeded = value;
+        assert.equal(options.adoption, true);
+        return { preferences: value, adopted: true };
+      },
+    }), {
+      adoptable: false,
+      adoptionPreferences: applicationSettingsDefaults(),
+    });
+
+    // The new user's document is seeded from defaults, not A's cache.
+    const defaults = preferences();
+    assert.equal((seeded as typeof defaults).test.include_numbers, false);
+    assert.equal((seeded as typeof defaults).test.include_punctuation, false);
+    assert.equal(result.preferences.test.include_numbers, false);
+    assert.equal(result.preferences.test.include_punctuation, false);
+    assert.equal(result.adopted, true);
+  });
+
+  it("guest -> first login with no prior owner still adopts local", async () => {
+    const guestLocal = preferences({ test: { include_numbers: true } });
+    let seeded: unknown = null;
+    const result = await resolveInitialSettings(guestLocal, transport({
+      read: async () => ({ syncEnabled: true, preferences: null }),
+      write: async (value, options) => {
+        seeded = value;
+        assert.equal(options.adoption, true);
+        return { preferences: value, adopted: true };
+      },
+    }), {
+      adoptable: true,
+      adoptionPreferences: applicationSettingsDefaults(),
+    });
+
+    const defaults = preferences();
+    assert.equal((seeded as typeof defaults).test.include_numbers, true);
+    assert.equal(result.preferences.test.include_numbers, true);
+    assert.equal(result.adopted, true);
+  });
+
+  it("A -> logout -> B with an existing remote record receives B's settings", async () => {
+    const aliceLocal = preferences({ test: { include_numbers: true } });
+    const bobRemote = preferences({ test: { include_punctuation: true } });
+    let writes = 0;
+    const result = await resolveInitialSettings(aliceLocal, transport({
+      read: async () => ({ syncEnabled: true, preferences: bobRemote }),
+      write: async (value) => {
+        writes += 1;
+        return { preferences: value, adopted: false };
+      },
+    }), { adoptable: false });
+
+    assert.equal(writes, 0);
+    assert.equal(result.preferences.test.include_punctuation, true);
+    assert.equal(result.preferences.test.include_numbers, false);
+  });
+
+  it("clears every pending write regardless of owner", () => {
+    const storage = memoryStorage();
+    storePendingSettingsWrite(storage, {
+      usernameLower: "alice",
+      preferences: preferences({ test: { include_numbers: true } }),
+      adoption: false,
+      queuedAt: 1,
+    });
+    clearAllPendingSettingsWrites(storage);
+    assert.equal(storage.getItem(SETTINGS_PENDING_WRITE_KEY), null);
+    // B never sees A's queued write.
+    assert.equal(readPendingSettingsWrite(storage, "bob"), null);
+  });
+});
+
+describe("settings unsupported future schema", () => {
+  it("never overwrites a newer remote record on read", async () => {
+    const local = preferences({ test: { include_numbers: true } });
+    let writes = 0;
+    const result = await resolveInitialSettings(local, transport({
+      read: async () => ({
+        syncEnabled: true,
+        preferences: preferences(),
+        unsupportedSchema: true,
+        remoteSchemaVersion: 2,
+      }),
+      write: async (value) => {
+        writes += 1;
+        return { preferences: value, adopted: false };
+      },
+    }));
+
+    assert.equal(result.status, "unsupported-remote");
+    assert.equal(result.unsupportedSchema, true);
+    assert.equal(result.remoteSchemaVersion, 2);
+    assert.equal(result.remoteResolved, true);
+    assert.equal(writes, 0);
+    // App stays usable on safe local settings.
+    assert.equal(result.preferences.test.include_numbers, true);
+  });
+
+  it("does not write back a pending change over a newer remote record", async () => {
+    const pending = {
+      usernameLower: "alice",
+      preferences: preferences({ test: { include_punctuation: true } }),
+      adoption: false,
+      queuedAt: 5,
+    };
+    let writes = 0;
+    const result = await resolveInitialSettings(preferences(), transport({
+      read: async () => ({
+        syncEnabled: true,
+        preferences: preferences(),
+        unsupportedSchema: true,
+        remoteSchemaVersion: 3,
+      }),
+      write: async (value) => {
+        writes += 1;
+        return { preferences: value, adopted: false };
+      },
+    }), { pending });
+
+    assert.equal(result.status, "unsupported-remote");
+    assert.equal(writes, 0);
+    assert.equal(result.preferences.test.include_punctuation, true);
   });
 });

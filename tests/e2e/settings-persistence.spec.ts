@@ -20,6 +20,29 @@ async function openSettings(page: Page) {
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 }
 
+test("the typing prompt boots within the bounded fallback even when auth never resolves", async ({ page }) => {
+  // /api/auth/me never resolves, so auth (and therefore settings) resolution can
+  // never settle. The bounded boot fallback must still initialize the prompt
+  // from safe local/default settings rather than hanging indefinitely.
+  let settingsRequests = 0;
+  await page.addInitScript(() => localStorage.clear());
+  await page.route("**/api/auth/me", async () => {
+    // Intentionally left pending to simulate a stalled auth chain.
+    await new Promise((resolve) => setTimeout(resolve, 30_000));
+  });
+  await page.route("**/api/settings", (route) => {
+    settingsRequests += 1;
+    return route.fulfill({ status: 401, json: { error: "unauthorized" } });
+  });
+  await routeGeneration(page);
+
+  await page.goto("/");
+  await expect(page.locator("[data-testid='prompt-root'] .bk-word"))
+    .toHaveCount(15, { timeout: 20_000 });
+  // Auth never resolved, so no authenticated settings write should occur.
+  expect(settingsRequests).toBe(0);
+});
+
 test("guest preferences stay local and never call the settings API", async ({ page }) => {
   let settingsRequests = 0;
   await page.addInitScript(() => {

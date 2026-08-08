@@ -6,16 +6,21 @@ import { create } from "zustand";
 import { useAuthStore } from "@/store/auth";
 import { useSettingsStore } from "@/store/settings";
 import {
+  applicationSettingsDefaults,
   normalizePreferences,
   serializePreferences,
   toPreferences,
   type PersistedPreferences,
 } from "@/lib/settings/preferencesSchema";
 import {
+  clearAllPendingSettingsWrites,
   clearPendingSettingsWrite,
+  isAdoptableLocalCache,
   readPendingSettingsWrite,
+  readSettingsOwner,
   resolveInitialSettings,
   storePendingSettingsWrite,
+  writeSettingsOwner,
   type SettingsReadResult,
   type SettingsTransport,
   type SettingsWriteResult,
@@ -27,6 +32,7 @@ export type SettingsSyncStatus =
   | "loading-remote"
   | "ready"
   | "local-only"
+  | "unsupported-remote"
   | "syncing"
   | "unsynced";
 
@@ -45,7 +51,12 @@ export const useSettingsSyncStore = create<SettingsSyncState>(() => ({
 }));
 
 export function isSettingsHydrationSettled(status: SettingsSyncStatus): boolean {
-  return status === "ready" || status === "local-only" || status === "unsynced";
+  return (
+    status === "ready" ||
+    status === "local-only" ||
+    status === "unsupported-remote" ||
+    status === "unsynced"
+  );
 }
 
 const REQUEST_TIMEOUT_MS = 3500;
@@ -88,6 +99,11 @@ function createTransport(): SettingsTransport {
         preferences: body.preferences == null
           ? null
           : normalizePreferences(body.preferences),
+        unsupportedSchema: body.unsupportedSchema === true,
+        remoteSchemaVersion:
+          typeof body.remoteSchemaVersion === "number"
+            ? body.remoteSchemaVersion
+            : undefined,
       };
     },
     write: async (preferences, options): Promise<SettingsWriteResult> => {
@@ -146,6 +162,7 @@ export function useSettingsSync() {
     let requestInFlight = false;
     let remoteResolved = false;
     let serverSyncEnabled = true;
+    let remoteSchemaUnsupported = false;
     let adoptionPending = false;
     let revision = 0;
     let baseline = "";
@@ -204,6 +221,7 @@ export function useSettingsSync() {
 
     const flush = async () => {
       if (cancelled || !usernameLower) return;
+      if (remoteSchemaUnsupported) return;
       if (requestInFlight) {
         retryAfterFlight = true;
         return;
@@ -268,6 +286,20 @@ export function useSettingsSync() {
       if (cancelled || !usernameLower || requestInFlight) return;
       requestInFlight = true;
       const startRevision = revision;
+      // Account isolation: if the shared local cache belongs to a different
+      // authenticated user, reset it to defaults before resolving so a new
+      // user's empty remote document is never seeded from a foreign cache.
+      const owner = (() => {
+        try { return readSettingsOwner(localStorage); }
+        catch { return null; }
+      })();
+      const adoptable = isAdoptableLocalCache(owner, usernameLower);
+      if (!adoptable) {
+        applyingRemote = true;
+        useSettingsStore.getState().applyPreferences(applicationSettingsDefaults());
+        applyingRemote = false;
+        try { clearAllPendingSettingsWrites(localStorage); } catch {}
+      }
       const local = toPreferences(useSettingsStore.getState());
       const pending = (() => {
         try { return readPendingSettingsWrite(localStorage, usernameLower); }
@@ -284,7 +316,12 @@ export function useSettingsSync() {
         const resolution = await resolveInitialSettings(
           pending?.preferences ?? local,
           transport,
-          { pending, signal: beginRequest() },
+          {
+            pending,
+            signal: beginRequest(),
+            adoptable,
+            adoptionPreferences: applicationSettingsDefaults(),
+          },
         );
         stopRequestTimer();
         if (cancelled) return;
@@ -308,6 +345,19 @@ export function useSettingsSync() {
           baseline = serializePreferences(resolution.preferences);
           persistPending(toPreferences(useSettingsStore.getState()), false);
           retryAfterFlight = true;
+        }
+        // Record who now owns the local cache so a later account switch resets it.
+        try { writeSettingsOwner(localStorage, usernameLower); } catch {}
+        if (resolution.unsupportedSchema) {
+          // A newer remote record exists; keep the app usable locally but never
+          // write back (which would downgrade it). Suspend all writes.
+          remoteSchemaUnsupported = true;
+          setSyncState({
+            status: "unsupported-remote",
+            usernameLower,
+            error: null,
+          });
+          return;
         }
         setSyncState({
           status: "ready",
@@ -349,6 +399,21 @@ export function useSettingsSync() {
       if (cancelled) return;
       baseline = serializePreferences(toPreferences(useSettingsStore.getState()));
       if (!usernameLower) {
+        // Logged out / guest. If the local cache still belongs to a previously
+        // authenticated user, reset it to defaults so logout leaves a
+        // deterministic safe state and never leaks into the next account.
+        const owner = (() => {
+          try { return readSettingsOwner(localStorage); }
+          catch { return null; }
+        })();
+        if (owner !== null) {
+          applyingRemote = true;
+          useSettingsStore.getState().applyPreferences(applicationSettingsDefaults());
+          applyingRemote = false;
+          try { writeSettingsOwner(localStorage, null); } catch {}
+          try { clearAllPendingSettingsWrites(localStorage); } catch {}
+          baseline = serializePreferences(toPreferences(useSettingsStore.getState()));
+        }
         setSyncState({
           status: "local-only",
           usernameLower: null,
@@ -361,7 +426,7 @@ export function useSettingsSync() {
         if (applyingRemote) return;
         const serialized = serializePreferences(toPreferences(state));
         if (serialized === baseline) return;
-        if (!serverSyncEnabled) {
+        if (!serverSyncEnabled || remoteSchemaUnsupported) {
           baseline = serialized;
           return;
         }

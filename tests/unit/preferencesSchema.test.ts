@@ -6,8 +6,10 @@ import {
   applyPreferences,
   applicationSettingsDefaults,
   deserializePreferences,
+  isUnsupportedSchemaVersion,
   migratePreferences,
   normalizePreferences,
+  readSchemaVersion,
   serializePreferences,
   toPreferences,
 } from "../../src/lib/settings/preferencesSchema";
@@ -163,5 +165,18 @@ describe("preference schema", () => {
       deserializePreferences("{not-json"),
       normalizePreferences(null),
     );
+  });
+
+  it("detects unsupported future schema versions without downgrading in place", () => {
+    assert.equal(readSchemaVersion({ schemaVersion: 2 }), 2);
+    assert.equal(readSchemaVersion({ preferences: { schemaVersion: 3 } }), 3);
+    assert.equal(readSchemaVersion({ state: { schemaVersion: 5 } }), 5);
+    assert.equal(readSchemaVersion({}), null);
+    assert.equal(readSchemaVersion({ schemaVersion: "2" }), null);
+
+    assert.equal(isUnsupportedSchemaVersion(PREFERENCES_SCHEMA_VERSION + 1), true);
+    assert.equal(isUnsupportedSchemaVersion(PREFERENCES_SCHEMA_VERSION), false);
+    assert.equal(isUnsupportedSchemaVersion(0), false);
+    assert.equal(isUnsupportedSchemaVersion(null), false);
   });
 });

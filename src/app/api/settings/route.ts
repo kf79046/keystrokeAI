@@ -7,7 +7,9 @@ import {
 } from "@/lib/appSession";
 import { getAdminDb, serverTs } from "@/lib/firebaseAdmin";
 import {
+  isUnsupportedSchemaVersion,
   normalizePreferences,
+  readSchemaVersion,
   type PersistedPreferences,
 } from "@/lib/settings/preferencesSchema";
 import { isSettingsServerSyncEnabled } from "@/lib/settings/serverSyncFlag";
@@ -84,12 +86,22 @@ export function createSettingsRouteHandlers(
         .collection(COLLECTION)
         .doc(usernameLower)
         .get();
+      if (!snapshot.exists) {
+        return response({ ok: true, syncEnabled: true, preferences: null });
+      }
+      const data = snapshot.data();
+      const remoteSchemaVersion = readSchemaVersion(data);
+      const unsupportedSchema = isUnsupportedSchemaVersion(remoteSchemaVersion);
       return response({
         ok: true,
         syncEnabled: true,
-        preferences: snapshot.exists
-          ? normalizePreferences(snapshot.data())
-          : null,
+        // The normalized view keeps the app usable locally, but the flag below
+        // tells the client to suspend writes so a newer record is never
+        // downgraded or overwritten with a v1 document.
+        preferences: normalizePreferences(data),
+        ...(unsupportedSchema
+          ? { unsupportedSchema: true, remoteSchemaVersion }
+          : {}),
       });
     } catch (error) {
       console.error("[/api/settings] read failed", {

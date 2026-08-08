@@ -458,6 +458,29 @@ export function migratePreferences(
   return normalizePreferences(raw);
 }
 
+/**
+ * Read the declared storage schema version of a raw record (accepting the same
+ * `preferences`/`state`/bare envelopes as normalization). Returns null when no
+ * finite numeric version is present.
+ */
+export function readSchemaVersion(raw: unknown): number | null {
+  const source = sourceRecord(raw);
+  const version = source.schemaVersion;
+  return typeof version === "number" && Number.isFinite(version)
+    ? version
+    : null;
+}
+
+/**
+ * True when a record declares a storage schema newer than this build can
+ * represent. Such records must not be normalized-and-written-back (which would
+ * silently downgrade them); callers keep the app usable locally and suspend
+ * remote writes instead.
+ */
+export function isUnsupportedSchemaVersion(version: number | null): boolean {
+  return typeof version === "number" && version > PREFERENCES_SCHEMA_VERSION;
+}
+
 export function toPreferences(state: SettingsData): PersistedPreferences {
   return normalizePreferences(state);
 }

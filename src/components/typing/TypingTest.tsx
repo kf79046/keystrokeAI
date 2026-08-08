@@ -101,6 +101,16 @@ function afterNextPaint() {
   });
 }
 
+/**
+ * Hard upper bound on how long first-test boot waits for the full auth + settings
+ * resolution chain to settle. If auth (`/api/auth/me`) or the settings sync stalls
+ * past this, boot proceeds from safe locally-hydrated/default settings so the
+ * typing prompt never hangs. Late remote preferences still land in the store and
+ * apply to the NEXT test only — they cannot mutate the already-active prompt
+ * (guarded by `bootConfigured`).
+ */
+export const BOOT_SETTINGS_FALLBACK_MS = 4000;
+
 const TypingTest: React.FC = () => {
   
   type PromptLoad = 'idle'|'loading'|'ready'|'error';
@@ -163,6 +173,18 @@ const TypingTest: React.FC = () => {
   const [bootConfigured, setBootConfigured] = useState(false);
   const settingsSyncStatus = useSettingsSyncStore((state) => state.status);
   const settingsHydrationSettled = isSettingsHydrationSettled(settingsSyncStatus);
+  // Bounded total fallback: if auth/settings resolution stalls, boot anyway from
+  // safe local/default settings so the prompt is never blocked indefinitely.
+  const [bootFallbackReady, setBootFallbackReady] = useState(false);
+  useEffect(() => {
+    if (settingsHydrationSettled || bootConfigured) return;
+    const timer = setTimeout(
+      () => setBootFallbackReady(true),
+      BOOT_SETTINGS_FALLBACK_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [settingsHydrationSettled, bootConfigured]);
+  const bootReady = settingsHydrationSettled || bootFallbackReady;
 
   // Reentrancy/coordination for new-test triggers
   const newReqTokenRef = useRef(0);
@@ -319,7 +341,7 @@ const TypingTest: React.FC = () => {
   // Apply last-used config before first load
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (bootConfigured || !settingsHydrationSettled) return;
+    if (bootConfigured || !bootReady) return;
     const settings = useSettingsStore.getState().test;
     const persistedDefaults: TestGenerationConfigInput = {
       mode:
@@ -357,7 +379,7 @@ const TypingTest: React.FC = () => {
     setShowNumbers(resolved.includeNumbers);
     setShowPunctuation(resolved.includePunctuation);
     setBootConfigured(true);
-  }, [DEFAULT_WORDS, bootConfigured, settingsHydrationSettled]);
+  }, [DEFAULT_WORDS, bootConfigured, bootReady]);
 
   type GeneratePayload = {
     mode: 'words' | 'time';
