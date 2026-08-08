@@ -43,6 +43,75 @@ test("the typing prompt boots within the bounded fallback even when auth never r
   expect(settingsRequests).toBe(0);
 });
 
+test("legacy local cache with no provenance marker is not adopted for a new user", async ({ page }) => {
+  // A pre-fix cache: user A's non-default values sit in bk:settings:v1 with NO
+  // bk:settings:owner:v1 marker. A brand-new user B (no remote document) must
+  // NOT adopt A's leftover preferences — the seed must come from defaults.
+  const putBodies: Array<Record<string, unknown>> = [];
+  await page.addInitScript(() => {
+    localStorage.clear();
+    localStorage.setItem("bk:settings:v1", JSON.stringify({
+      version: 2,
+      state: {
+        schemaVersion: 1,
+        test: {
+          defaultMode: "words",
+          defaultLength: 15,
+          include_numbers: true,
+          include_punctuation: true,
+        },
+      },
+    }));
+    // Intentionally no "bk:settings:owner:v1" key (legacy / unknown provenance).
+  });
+  await page.route("**/api/auth/me", (route) => route.fulfill({
+    json: {
+      id: 2,
+      username: "Bob",
+      xpTotal: 0,
+      streak: 0,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    },
+  }));
+  await page.route("**/api/settings", async (route) => {
+    if (route.request().method() === "GET") {
+      return route.fulfill({
+        json: { ok: true, syncEnabled: true, preferences: null },
+      });
+    }
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    putBodies.push(body);
+    return route.fulfill({
+      json: {
+        ok: true,
+        syncEnabled: true,
+        preferences: body.preferences,
+        adopted: body.adoption === true,
+      },
+    });
+  });
+  await routeGeneration(page);
+
+  await page.goto("/");
+  const promptWords = page.locator("[data-testid='prompt-root'] .bk-word");
+  await expect(promptWords).toHaveCount(15, { timeout: 20_000 });
+
+  // The one-time adoption seed must be defaults, never A's leftover values.
+  await expect.poll(() => putBodies.length).toBeGreaterThan(0);
+  const adoption = putBodies.find((b) => b.adoption === true);
+  expect(adoption).toBeTruthy();
+  const seeded = (adoption!.preferences as { test: Record<string, unknown> }).test;
+  expect(seeded.include_numbers).toBe(false);
+  expect(seeded.include_punctuation).toBe(false);
+
+  // Chips reflect defaults, and the rendered prompt has no numbers.
+  await expect(page.getByRole("button", { name: /numbers/i }))
+    .toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("button", { name: /punctuation/i }))
+    .toHaveAttribute("aria-pressed", "false");
+  expect((await promptWords.allTextContents()).join(" ")).not.toMatch(/[0-9]/);
+});
+
 test("guest preferences stay local and never call the settings API", async ({ page }) => {
   let settingsRequests = 0;
   await page.addInitScript(() => {

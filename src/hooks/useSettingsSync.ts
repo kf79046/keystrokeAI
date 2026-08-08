@@ -17,10 +17,10 @@ import {
   clearPendingSettingsWrite,
   isAdoptableLocalCache,
   readPendingSettingsWrite,
-  readSettingsOwner,
+  readSettingsProvenance,
   resolveInitialSettings,
   storePendingSettingsWrite,
-  writeSettingsOwner,
+  writeSettingsProvenance,
   type SettingsReadResult,
   type SettingsTransport,
   type SettingsWriteResult,
@@ -286,14 +286,16 @@ export function useSettingsSync() {
       if (cancelled || !usernameLower || requestInFlight) return;
       requestInFlight = true;
       const startRevision = revision;
-      // Account isolation: if the shared local cache belongs to a different
-      // authenticated user, reset it to defaults before resolving so a new
-      // user's empty remote document is never seeded from a foreign cache.
-      const owner = (() => {
-        try { return readSettingsOwner(localStorage); }
-        catch { return null; }
+      // Account isolation: the shared local cache may seed a new remote document
+      // only when it is explicitly guest-owned or already this user's. A cache
+      // owned by a different user, or a pre-fix cache with unknown provenance, is
+      // reset to defaults before resolving so a new user's empty remote is never
+      // seeded from a foreign or unattributable cache.
+      const provenance = (() => {
+        try { return readSettingsProvenance(localStorage); }
+        catch { return { kind: "unknown" as const }; }
       })();
-      const adoptable = isAdoptableLocalCache(owner, usernameLower);
+      const adoptable = isAdoptableLocalCache(provenance, usernameLower);
       if (!adoptable) {
         applyingRemote = true;
         useSettingsStore.getState().applyPreferences(applicationSettingsDefaults());
@@ -320,7 +322,7 @@ export function useSettingsSync() {
             pending,
             signal: beginRequest(),
             adoptable,
-            adoptionPreferences: applicationSettingsDefaults(),
+            adoptionPreferences: normalizePreferences(applicationSettingsDefaults()),
           },
         );
         stopRequestTimer();
@@ -347,7 +349,7 @@ export function useSettingsSync() {
           retryAfterFlight = true;
         }
         // Record who now owns the local cache so a later account switch resets it.
-        try { writeSettingsOwner(localStorage, usernameLower); } catch {}
+        try { writeSettingsProvenance(localStorage, { kind: "user", usernameLower }); } catch {}
         if (resolution.unsupportedSchema) {
           // A newer remote record exists; keep the app usable locally but never
           // write back (which would downgrade it). Suspend all writes.
@@ -399,20 +401,30 @@ export function useSettingsSync() {
       if (cancelled) return;
       baseline = serializePreferences(toPreferences(useSettingsStore.getState()));
       if (!usernameLower) {
-        // Logged out / guest. If the local cache still belongs to a previously
-        // authenticated user, reset it to defaults so logout leaves a
-        // deterministic safe state and never leaks into the next account.
-        const owner = (() => {
-          try { return readSettingsOwner(localStorage); }
-          catch { return null; }
+        // Logged out / guest. Establish a safe, explicit provenance for the
+        // local cache so a later first login adopts only a legitimately
+        // guest-owned cache.
+        const provenance = (() => {
+          try { return readSettingsProvenance(localStorage); }
+          catch { return { kind: "unknown" as const }; }
         })();
-        if (owner !== null) {
+        if (provenance.kind === "user") {
+          // A previously authenticated user logged out: reset to defaults, clear
+          // any pending write, and claim the clean cache as guest-owned.
           applyingRemote = true;
           useSettingsStore.getState().applyPreferences(applicationSettingsDefaults());
           applyingRemote = false;
-          try { writeSettingsOwner(localStorage, null); } catch {}
+          try { writeSettingsProvenance(localStorage, { kind: "guest" }); } catch {}
           try { clearAllPendingSettingsWrites(localStorage); } catch {}
           baseline = serializePreferences(toPreferences(useSettingsStore.getState()));
+        } else if (provenance.kind === "unknown") {
+          // Only claim a clean (default) cache as guest-owned. A pre-fix legacy
+          // cache with non-default values stays unknown and is never adopted, so
+          // a prior user's leftover settings cannot seed a new account.
+          const defaults = serializePreferences(applicationSettingsDefaults());
+          if (baseline === defaults) {
+            try { writeSettingsProvenance(localStorage, { kind: "guest" }); } catch {}
+          }
         }
         setSyncState({
           status: "local-only",

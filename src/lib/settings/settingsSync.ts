@@ -51,51 +51,74 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Identity that currently owns the shared `bk:settings:v1` local cache, or null
- * when the cache belongs to a guest (no prior authenticated owner). Used to
- * prevent one authenticated user's cache from seeding another user's brand-new
- * remote document (cross-account preference leak).
+ * Provenance of the shared `bk:settings:v1` local cache:
+ * - `unknown`  — no provenance marker recorded. A pre-fix legacy cache falls
+ *   here; because a prior authenticated user may have logged out before this
+ *   tracking existed, an unknown cache is never treated as adoptable.
+ * - `guest`    — explicitly claimed by a guest session that started from a clean
+ *   (default) cache, so it may seed that guest's first authenticated document.
+ * - `user`     — owned by a specific authenticated user (`usernameLower`).
  */
-export function readSettingsOwner(
+export type SettingsProvenance =
+  | { kind: "unknown" }
+  | { kind: "guest" }
+  | { kind: "user"; usernameLower: string };
+
+export function readSettingsProvenance(
   storage: Pick<Storage, "getItem">,
-): string | null {
+): SettingsProvenance {
   try {
     const raw = storage.getItem(SETTINGS_OWNER_KEY);
-    if (!raw) return null;
+    if (!raw) return { kind: "unknown" };
     const parsed = JSON.parse(raw) as unknown;
-    const owner = isRecord(parsed) ? parsed.usernameLower : null;
-    return typeof owner === "string" && owner.length > 0 ? owner : null;
+    if (isRecord(parsed)) {
+      if (parsed.kind === "guest") return { kind: "guest" };
+      const owner = parsed.usernameLower;
+      if (typeof owner === "string" && owner.length > 0) {
+        return { kind: "user", usernameLower: owner };
+      }
+    }
+    return { kind: "unknown" };
   } catch {
-    return null;
+    return { kind: "unknown" };
   }
 }
 
-export function writeSettingsOwner(
+export function writeSettingsProvenance(
   storage: Pick<Storage, "setItem" | "removeItem">,
-  usernameLower: string | null,
+  provenance: SettingsProvenance,
 ) {
   try {
-    if (usernameLower) {
-      storage.setItem(SETTINGS_OWNER_KEY, JSON.stringify({ usernameLower }));
-    } else {
+    if (provenance.kind === "unknown") {
       storage.removeItem(SETTINGS_OWNER_KEY);
+    } else if (provenance.kind === "guest") {
+      storage.setItem(SETTINGS_OWNER_KEY, JSON.stringify({ kind: "guest" }));
+    } else {
+      storage.setItem(
+        SETTINGS_OWNER_KEY,
+        JSON.stringify({ kind: "user", usernameLower: provenance.usernameLower }),
+      );
     }
   } catch {
-    // Ownership tracking is best-effort; the reset-on-transition path is the
+    // Provenance tracking is best-effort; the reset-on-transition path is the
     // durable isolation guarantee.
   }
 }
 
 /**
- * The local cache may seed a new remote document only when it belongs to a guest
- * (no prior authenticated owner) or already to this same user. A different
- * authenticated owner must never be adopted.
+ * The local cache may seed a new remote document only when it is explicitly
+ * guest-owned or already owned by this same user. An unknown (legacy) or
+ * different-user cache must never be adopted.
  */
 export function isAdoptableLocalCache(
-  owner: string | null,
+  provenance: SettingsProvenance,
   usernameLower: string,
 ): boolean {
-  return owner === null || owner === usernameLower;
+  if (provenance.kind === "guest") return true;
+  if (provenance.kind === "user") {
+    return provenance.usernameLower === usernameLower;
+  }
+  return false;
 }
 
 export function parsePendingSettingsWrite(

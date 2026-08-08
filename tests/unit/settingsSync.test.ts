@@ -13,14 +13,13 @@ import {
   isAdoptableLocalCache,
   parsePendingSettingsWrite,
   readPendingSettingsWrite,
-  readSettingsOwner,
+  readSettingsProvenance,
   resolveInitialSettings,
   storePendingSettingsWrite,
-  writeSettingsOwner,
+  writeSettingsProvenance,
   type SettingsTransport,
 } from "../../src/lib/settings/settingsSync";
 import { isSettingsServerSyncEnabled } from "../../src/lib/settings/serverSyncFlag";
-import { applicationSettingsDefaults } from "../../src/lib/settings/preferencesSchema";
 
 function preferences(
   patch: Record<string, unknown> = {},
@@ -200,19 +199,61 @@ describe("settings synchronization resolution", () => {
 });
 
 describe("settings account isolation", () => {
-  it("tracks local cache ownership and adoptability", () => {
+  it("tracks local cache provenance and adoptability", () => {
     const storage = memoryStorage();
-    assert.equal(readSettingsOwner(storage), null);
-    assert.equal(isAdoptableLocalCache(null, "bob"), true);
+    // No marker at all is an unknown (legacy) cache: never adoptable.
+    assert.deepEqual(readSettingsProvenance(storage), { kind: "unknown" });
+    assert.equal(isAdoptableLocalCache({ kind: "unknown" }, "bob"), false);
+    assert.equal(isAdoptableLocalCache({ kind: "guest" }, "bob"), true);
+    assert.equal(
+      isAdoptableLocalCache({ kind: "user", usernameLower: "alice" }, "alice"),
+      true,
+    );
+    assert.equal(
+      isAdoptableLocalCache({ kind: "user", usernameLower: "alice" }, "bob"),
+      false,
+    );
 
-    writeSettingsOwner(storage, "alice");
-    assert.equal(readSettingsOwner(storage), "alice");
-    assert.equal(storage.getItem(SETTINGS_OWNER_KEY) !== null, true);
-    assert.equal(isAdoptableLocalCache("alice", "alice"), true);
-    assert.equal(isAdoptableLocalCache("alice", "bob"), false);
+    writeSettingsProvenance(storage, { kind: "user", usernameLower: "alice" });
+    assert.deepEqual(readSettingsProvenance(storage), {
+      kind: "user",
+      usernameLower: "alice",
+    });
 
-    writeSettingsOwner(storage, null);
-    assert.equal(readSettingsOwner(storage), null);
+    writeSettingsProvenance(storage, { kind: "guest" });
+    assert.deepEqual(readSettingsProvenance(storage), { kind: "guest" });
+
+    writeSettingsProvenance(storage, { kind: "unknown" });
+    assert.equal(storage.getItem(SETTINGS_OWNER_KEY), null);
+    assert.deepEqual(readSettingsProvenance(storage), { kind: "unknown" });
+  });
+
+  it("legacy cache: an unknown-provenance cache is never adopted for a new user", async () => {
+    // Pre-fix cache: A logged out before provenance tracking existed, so A's
+    // values still sit in the shared local cache with no marker.
+    const aliceLegacyLocal = preferences({
+      test: { include_numbers: true, include_punctuation: true },
+    });
+    assert.equal(isAdoptableLocalCache({ kind: "unknown" }, "bob"), false);
+
+    let seeded: unknown = null;
+    const result = await resolveInitialSettings(aliceLegacyLocal, transport({
+      read: async () => ({ syncEnabled: true, preferences: null }),
+      write: async (value, options) => {
+        seeded = value;
+        assert.equal(options.adoption, true);
+        return { preferences: value, adopted: true };
+      },
+    }), {
+      adoptable: false,
+      adoptionPreferences: preferences(),
+    });
+
+    const defaults = preferences();
+    assert.equal((seeded as typeof defaults).test.include_numbers, false);
+    assert.equal((seeded as typeof defaults).test.include_punctuation, false);
+    assert.equal(result.preferences.test.include_numbers, false);
+    assert.equal(result.preferences.test.include_punctuation, false);
   });
 
   it("A -> logout -> new B: B does NOT adopt A's local cache", async () => {
@@ -230,7 +271,7 @@ describe("settings account isolation", () => {
       },
     }), {
       adoptable: false,
-      adoptionPreferences: applicationSettingsDefaults(),
+      adoptionPreferences: preferences(),
     });
 
     // The new user's document is seeded from defaults, not A's cache.
@@ -254,7 +295,7 @@ describe("settings account isolation", () => {
       },
     }), {
       adoptable: true,
-      adoptionPreferences: applicationSettingsDefaults(),
+      adoptionPreferences: preferences(),
     });
 
     const defaults = preferences();
